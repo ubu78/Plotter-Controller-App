@@ -18,3 +18,7 @@ section.wide{grid-column:1/-1}
 header h1{flex:0 1 auto}header{flex-wrap:wrap}header span{margin-left:auto}
 .gcode{margin:0;height:220px;overflow:auto;background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:6px;font:12px/1.4 monospace;white-space:pre}
 .credit.rust{color:#b7410e;border-color:#b7410e}@media(prefers-color-scheme:dark){.credit.rust{color:#ff8a50;border-color:#ff8a50}}
+.axrow{display:flex;gap:8px;align-items:center;margin:4px 0;border:1px solid var(--bd);border-radius:6px;padding:4px 8px}
+.axrow b{width:16px;font-size:14px}.axrow code{margin-left:auto;font:13px monospace}.axrow .work{font-size:9px;color:var(--mu);letter-spacing:.08em}
+.zbtn{padding:2px 7px}.wcs{font:12px monospace;background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:3px 8px;color:var(--mu)}
+.hint{font-size:12px;color:var(--mu);margin:2px 0 4px}

@@ -114,6 +114,8 @@ impl Grbl {
     fn rt(&self, b: &[u8]) { if let Some(p) = self.inner.lock().unwrap().port.as_mut() { let _ = p.write_all(b); } }
     pub fn hold(&self) { self.rt(b"!"); }
     pub fn resume(&self) { self.rt(b"~"); }
+    /// Real-time feed override (GRBL 1.1): 0x91 = +10%, 0x88 = -10%, 0x90 = set 100%.
+    pub fn feed_ov(&self, b: u8) { self.rt(&[b]); }
     pub fn reset(&self) { { let mut i = self.inner.lock().unwrap(); Self::reset_state(&mut i); } self.rt(&[0x18]); }
     pub fn jog_cancel(&self) { self.inner.lock().unwrap().queue.clear(); self.rt(&[0x85]); }
 }

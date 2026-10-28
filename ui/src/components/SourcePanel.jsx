@@ -4,7 +4,7 @@ import Preview from './Preview.jsx';
 const b64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 32768) s += String.fromCharCode.apply(null, u8.subarray(i, i + 32768)); return btoa(s); };
 export default function SourcePanel({ t, pen, status, setLog, onConv }) {
   const [o, setO] = useState({ paper: 'A4', margin: 0, scale: 100, center: false, feed: 3000, landscape: false, laserOff: true });
-  const [tx, setTx] = useState({ text: '', font: 'Roboto', size: 6, lineHeight: 1.4, markdown: false, singleLine: true, startX: 0, startY: 0 });
+  const [tx, setTx] = useState({ text: '', font: 'Roboto', size: 6, lineHeight: 1.4, markdown: false, fillMode: 'pen', startX: 0, startY: 0 });
   const [fonts, setFonts] = useState([]); const [svg, setSvg] = useState('');
   const [mode, setMode] = useState('svg'); const [off, setOff] = useState([0, 0]); const [page, setPage] = useState(0); const [conv, setConv] = useState(null); const [pick, setPick] = useState(false); const [pdf, setPdf] = useState(''); const [pdfDraw, setPdfDraw] = useState(true);
   const set = (k, v) => setO(p => ({ ...p, [k]: v })); const st = (k, v) => setTx(p => ({ ...p, [k]: v }));
@@ -29,6 +29,9 @@ export default function SourcePanel({ t, pen, status, setLog, onConv }) {
       <div className="row"><button className="pri" onClick={() => run()}>{t('convert')}</button>
         <button onClick={() => conv?.gcode ? api('stream', { gcode: conv.gcode }) : setLog(l => [...l, t('noconv')])}>{t('plot')}</button>
         <button onClick={() => api('hold', {})}>❚❚</button><button onClick={() => api('resume', {})}>▶</button>
+        <button title="F −10%" onClick={() => api('feedov', { kind: 'minus' })}>F−</button>
+        <button title="F 100%" onClick={() => api('feedov', { kind: 'reset' })}>F%</button>
+        <button title="F +10%" onClick={() => api('feedov', { kind: 'plus' })}>F+</button>
         <button onClick={() => { if (!conv?.gcode) return setLog(l => [...l, t('noconv')]);
           api('savefile', { name: 'drawing.gcode', content: conv.gcode }).then(r => setLog(l => [...l, '→ ' + (r?.path || '')]), e => setLog(l => [...l, 'ERR ' + e])); }}>{t('save')}</button></div>
       <div className="warn">{(conv?.warnings || []).join(' • ')}</div></section>
@@ -42,7 +45,11 @@ export default function SourcePanel({ t, pen, status, setLog, onConv }) {
       <textarea rows={6} style={{ width: '100%' }} value={tx.text} placeholder="Привет, мир! Tere, õäöü" onChange={e => st('text', e.target.value)} />
       <label><span>{t('font')}</span><select value={tx.font} onChange={e => st('font', e.target.value)}>{fonts.map(f => <option key={f}>{f}</option>)}</select></label>
       <label><span>{t('fsize')}</span>{num('size', tx.size, st)}</label><label><span>{t('lh')}</span>{num('lineHeight', tx.lineHeight, st)}</label>
-      <label><span>{t('single')}</span><input type="checkbox" checked={tx.singleLine} onChange={e => st('singleLine', e.target.checked)} /></label>
+      <label><span>{t('speed')}</span>{num('feed', o.feed)} мм/мин</label>
+      <label><span>{t('style')}</span><select value={tx.fillMode} onChange={e => st('fillMode', e.target.value)}>
+        <option value="pen">{t('fmpen')}</option><option value="single">{t('fmsingle')}</option>
+        <option value="fill">{t('fmfill')}</option><option value="hatch">{t('fmhatch')}</option></select></label>
+      <div className="hint">{t('d' + tx.fillMode)}</div>
       <label><span>{t('start')}</span>{num('startX', tx.startX, st)}{num('startY', tx.startY, st)}
         <button className={pick ? 'pri' : ''} onClick={() => setPick(!pick)}>{pick ? t('picking') : t('pick')}</button></label>
       <label><span>{t('md')}</span><input type="checkbox" checked={tx.markdown} onChange={e => st('markdown', e.target.checked)} /></label>

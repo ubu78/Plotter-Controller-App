@@ -43,9 +43,11 @@ fn main() {
         std::thread::spawn(move || for m in rx { if proxy.send_event(m).is_err() { break; } });
     }
 
+    let win_w = std::env::var("PLOTTER_WIN_W").ok().and_then(|v| v.parse().ok()).unwrap_or(1440.0);
+    let win_h = std::env::var("PLOTTER_WIN_H").ok().and_then(|v| v.parse().ok()).unwrap_or(950.0);
     let window = WindowBuilder::new()
         .with_title("Plotter Controller")
-        .with_inner_size(LogicalSize::new(1440.0, 950.0))
+        .with_inner_size(LogicalSize::new(win_w, win_h))
         .build(&event_loop)
         .expect("cannot create window");
 

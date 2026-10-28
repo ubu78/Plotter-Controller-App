@@ -8,7 +8,7 @@ pub struct Opt {
     pub offset_x: f64, pub offset_y: f64, pub feed: f64, pub pen_mode: String, pub z_up: f64, pub z_down: f64,
     pub z_feed: f64, pub servo_down: String, pub servo_up: String, pub landscape: bool, pub laser_off: bool, pub dwell: f64,
     // text
-    pub font: String, pub size: f64, pub line_height: f64, pub markdown: bool, pub single_line: bool,
+    pub font: String, pub size: f64, pub line_height: f64, pub markdown: bool, pub fill_mode: String,
     pub start_x: f64, pub start_y: f64, pub page: Option<usize>,
     #[serde(skip)] pub keep_origin: bool,
 }
@@ -17,7 +17,7 @@ impl Default for Opt {
         Opt { paper: "A4".into(), paper_w: 0.0, paper_h: 0.0, margin: 0.0, scale: 100.0, center: false, offset_x: 0.0, offset_y: 0.0,
             feed: 3000.0, pen_mode: "servo".into(), z_up: 5.0, z_down: 0.0, z_feed: 500.0, servo_down: "M3 S255".into(), servo_up: "M5".into(),
             landscape: false, laser_off: true, dwell: 0.15, font: "Roboto".into(), size: 6.0, line_height: 1.4, markdown: false,
-            single_line: true, start_x: 0.0, start_y: 0.0, page: None, keep_origin: false }
+            fill_mode: "pen".into(), start_x: 0.0, start_y: 0.0, page: None, keep_origin: false }
     }
 }
 
@@ -38,7 +38,7 @@ pub fn paper(o: &Opt, warn: &mut Vec<String>) -> (f64, f64) {
     (w, h)
 }
 
-fn bbox(p: &Polys) -> [f64; 4] {
+pub fn bbox(p: &Polys) -> [f64; 4] {
     let mut b: [f64; 4] = [1e9, 1e9, -1e9, -1e9];
     for q in p { for v in q { b = [b[0].min(v[0]), b[1].min(v[1]), b[2].max(v[0]), b[3].max(v[1])]; } }
     b

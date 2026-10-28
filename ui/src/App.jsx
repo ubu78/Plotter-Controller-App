@@ -40,7 +40,7 @@ export default function App() {
       <button onClick={quit}>{t('quit')}</button></header>
     <main>
       <ConnectionPanel t={t} status={status} send={send} />
-      <ManualPanel t={t} send={send} pen={pen} />
+      <ManualPanel t={t} send={send} pen={pen} status={status} />
       <PenPanel t={t} pen={pen} setPen={setPen} />
       <SourcePanel t={t} pen={pen} status={status} setLog={setLog} onConv={r => setGcode(r.gcode || '')} />
       <SettingsPanel t={t} lang={lang} values={values} send={send} />
