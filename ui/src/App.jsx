@@ -33,7 +33,7 @@ export default function App() {
   if (stopped) return <main><section className="wide"><h2>Plotter Controller</h2>{t('stopped')}</section></main>;
   return (<>
     <header><h1>Plotter Controller</h1>
-      <a className="credit" href="https://claude.ai" target="_blank" rel="noreferrer">✦ {t('credit')}</a>
+      <a className="credit" href="https://glm.ai" target="_blank" rel="noreferrer">✦ {t('credit')}</a>
       <a className="credit rust" href="https://www.rust-lang.org" target="_blank" rel="noreferrer">🦀 Built in Rust</a><span>{status.state}</span>
       <select value={lang} onChange={e => setLang(e.target.value)}><option value="ru">Русский</option><option value="en">English</option><option value="et">Eesti</option></select>
       <button className="stop" onClick={() => api('stop', {})}>{t('estop')}</button>
