@@ -1,0 +1,16 @@
+import { useEffect, useState } from 'react';
+import { api } from '../api';
+export default function ConnectionPanel({ t, status, send }) {
+  const [ports, setPorts] = useState([]); const [port, setPort] = useState(''); const [baud, setBaud] = useState(115200);
+  const refresh = () => api('ports').then(p => { if (Array.isArray(p)) { setPorts(p); setPort(x => x || p[0]?.path || ''); } });
+  useEffect(() => { refresh(); }, []);
+  const [x, y, z] = status.wpos;
+  return (<section><h2>{t('conn')}</h2>
+    <label><span>{t('port')}</span><select value={port} onChange={e => setPort(e.target.value)}>{ports.map(p => <option key={p.path} value={p.path}>{p.path} {p.name}</option>)}</select><button onClick={refresh}>↻</button></label>
+    <label><span>{t('baud')}</span><input type="number" value={baud} onChange={e => setBaud(+e.target.value)} /></label>
+    <div className="row"><button className="pri" onClick={() => api('connect', { port, baud })}>{t('connect')}</button>
+      <button onClick={() => api('disconnect', {})}>{t('disconnect')}</button>
+      <button onClick={() => send('$X')}>$X</button><button onClick={() => send('$H')}>$H</button></div>
+    <div id="pos">X{x.toFixed(2)} Y{y.toFixed(2)} Z{z.toFixed(2)}</div>
+    <div id="bar"><i style={{ width: status.progress * 100 + '%' }} /></div></section>);
+}

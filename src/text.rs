@@ -1,0 +1,134 @@
+//! Text/Markdown -> G-code. Google Fonts (full TTF) with cache, word wrap, pages, outline or single-line.
+use crate::gcode::{paper, polys_to_conv, Conv, Opt, Polys};
+use crate::skeleton::{glyph_strokes, Outline};
+use std::{fs, io::Read, path::PathBuf};
+use ttf_parser::OutlineBuilder;
+
+pub const FONTS: [&str; 14] = ["Roboto", "Open Sans", "PT Sans", "PT Serif", "Noto Serif", "Lora", "Playfair Display", "Ubuntu", "Comfortaa", "Caveat", "Marck Script", "Neucha", "Philosopher", "Underdog"];
+const TEST: &str = "äöõüÄÖÕÜжЖя"; // Estonian + Cyrillic coverage probe
+
+fn score(data: &[u8]) -> i32 { ttf_parser::Face::parse(data, 0).map(|f| TEST.chars().filter(|&c| f.glyph_index(c).is_some()).count() as i32).unwrap_or(-1) }
+
+fn get(url: &str) -> Result<Vec<u8>, String> {
+    let r = ureq::get(url).timeout(std::time::Duration::from_secs(20)).call().map_err(|e| e.to_string())?;
+    let mut v = vec![]; r.into_reader().take(20_000_000).read_to_end(&mut v).map_err(|e| e.to_string())?; Ok(v)
+}
+
+fn download(name: &str, file: &PathBuf) -> Result<(), String> {
+    let q: String = name.replace(' ', "+");
+    // no browser User-Agent -> Google returns full TTF (not woff2 subsets)
+    let css = String::from_utf8_lossy(&get(&format!("https://fonts.googleapis.com/css?family={q}&subset=cyrillic,latin"))?).to_string();
+    let urls: Vec<String> = css.split("url(").skip(1).filter_map(|s| s.split(')').next()).filter(|u| u.starts_with("https:")).map(String::from).collect();
+    if urls.is_empty() { return Err(format!("Font not found: {name}")); }
+    let (mut best, mut bs) = (vec![], -2);
+    for u in urls { let b = get(&u)?; let s = score(&b); if s > bs { bs = s; best = b; } }
+    fs::create_dir_all(file.parent().unwrap()).map_err(|e| e.to_string())?; fs::write(file, best).map_err(|e| e.to_string())
+}
+
+fn load_font(name: &str, warn: &mut Vec<String>) -> Result<Vec<u8>, String> {
+    let dir = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".cache/plotter-controller/fonts");
+    let file = dir.join(format!("{}.ttf", name.replace(|c: char| !c.is_alphanumeric(), "_")));
+    let r = if file.exists() { Ok(()) } else { download(name, &file) };
+    match r.and_then(|_| fs::read(&file).map_err(|e| e.to_string())) {
+        Ok(d) => Ok(d),
+        Err(e) => {
+            for p in ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf"] {
+                if let Ok(d) = fs::read(p) { warn.push(format!("Font \"{name}\" unavailable ({e}); using DejaVu Sans")); return Ok(d); }
+            }
+            Err(format!("Cannot load font \"{name}\" ({e}). Internet needed for first download."))
+        }
+    }
+}
+
+fn strip_md(t: &str) -> String {
+    t.lines().map(|l| { let l = l.trim_start_matches('#').trim_start(); let l = l.strip_prefix('>').map(str::trim_start).unwrap_or(l);
+        let l = if l.starts_with("- ") || l.starts_with("* ") || l.starts_with("+ ") { format!("• {}", &l[2..]) } else { l.to_string() };
+        l.replace(['*', '_', '`'], "") }).collect::<Vec<_>>().join("\n")
+}
+
+pub fn text_to_conv(text: &str, o: &Opt) -> Result<Conv, String> {
+    let mut warn = vec![];
+    let data = load_font(&o.font, &mut warn)?;
+    let face = ttf_parser::Face::parse(&data, 0).map_err(|e| e.to_string())?;
+    let (upm, sz) = (face.units_per_em() as f64, o.size);
+    let text = if o.markdown { strip_md(text) } else { text.to_string() };
+    let (pw, ph) = paper(o, &mut warn);
+    let mut miss: Vec<char> = text.chars().filter(|&c| !c.is_whitespace() && face.glyph_index(c).is_none()).collect(); miss.sort(); miss.dedup();
+    if !miss.is_empty() { warn.push(format!("Font has no glyphs for: {}", miss.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(" "))); }
+    let adv = |c: char| face.glyph_index(c).and_then(|g| face.glyph_hor_advance(g)).unwrap_or(0) as f64 / upm * sz;
+    let width = |s: &str| s.chars().map(adv).sum::<f64>();
+
+    let maxw = pw - o.start_x - o.margin;
+    let mut lines: Vec<String> = vec![];
+    for para in text.split('\n') {
+        let mut line = String::new();
+        for w in para.split_whitespace() {
+            let t = if line.is_empty() { w.to_string() } else { format!("{line} {w}") };
+            if !line.is_empty() && width(&t) > maxw { lines.push(std::mem::take(&mut line)); line = w.to_string(); } else { line = t; }
+        }
+        lines.push(line);
+    }
+    let step = sz * o.line_height;
+    let max_lines = (((ph - o.start_y - o.margin - sz) / step).floor() as i64 + 1).max(1) as usize;
+    let pages = ((lines.len() + max_lines - 1) / max_lines).max(1);
+    let page = o.page.unwrap_or(0).min(pages - 1);
+    if o.page.is_some() { lines = lines.into_iter().skip(page * max_lines).take(max_lines).collect(); }
+    else if lines.len() > max_lines { warn.push(format!("Text truncated: {} line(s) do not fit on the sheet", lines.len() - max_lines)); lines.truncate(max_lines); }
+    while lines.last().map_or(false, |l| l.is_empty()) { lines.pop(); }
+
+    let mut polys: Polys = vec![];
+    for (i, l) in lines.iter().enumerate() {
+        let base = sz * 0.8 + i as f64 * step; let mut x = 0.0;
+        for ch in l.chars() {
+            if o.single_line { // centre-line strokes, one pen line per stroke
+                for st in glyph_strokes(&face, ch) { polys.push(st.iter().map(|p| [x + p[0] * sz, base + p[1] * sz]).collect()); }
+            } else if let Some(g) = face.glyph_index(ch) {
+                let mut ob = Outline::new(x, base, sz / upm); face.outline_glyph(g, &mut ob); ob.close(); polys.extend(ob.polys);
+            }
+            x += adv(ch);
+        }
+    }
+    let mut o2 = o.clone(); o2.keep_origin = true; o2.margin = 0.0; o2.center = false; o2.scale = 100.0; o2.offset_x = o.start_x; o2.offset_y = o.start_y;
+    if polys.is_empty() { warn.push("Nothing to draw".into()); }
+    let mut c = polys_to_conv(polys, 1.0, &o2, warn); c.pages = Some(pages); c.page = Some(page);
+    Ok(c)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn markdown_stripped() {
+        assert_eq!(strip_md("# Заголовок\n- пункт\n*курсив*"), "Заголовок\n• пункт\nкурсив");
+    }
+
+    fn ensure_test_font() {
+        let dir = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".cache/plotter-controller/fonts");
+        fs::create_dir_all(&dir).unwrap();
+        let dst = dir.join("DejaVu_Sans.ttf");
+        if !dst.exists() { fs::copy("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", &dst).unwrap(); }
+    }
+
+    #[test]
+    fn text_conversion_from_local_cache() {
+        ensure_test_font();
+        let o = Opt { font: "DejaVu Sans".into(), ..Default::default() };
+        let c = text_to_conv("Привет, мир!", &o).unwrap();
+        assert!(!c.gcode.is_empty());
+        assert!(c.gcode.contains("M3 S255") && c.gcode.contains("M5"));
+        assert!(c.warnings.is_empty(), "no missing glyphs: {:?}", c.warnings);
+        assert_eq!(c.pages, Some(1));
+    }
+
+    #[test]
+    fn long_text_is_paginated() {
+        ensure_test_font();
+        let o = Opt { font: "DejaVu Sans".into(), size: 10.0, page: Some(1), ..Default::default() };
+        let text = "слово ".repeat(400);
+        let c = text_to_conv(&text, &o).unwrap();
+        assert!(c.pages.unwrap() > 1, "many pages expected");
+        assert_eq!(c.page, Some(1), "requested page 1");
+        assert!(!c.gcode.is_empty());
+    }
+}

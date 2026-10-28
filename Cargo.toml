@@ -1,0 +1,25 @@
+[package]
+name = "plotter-controller"
+version = "0.4.0"
+edition = "2021"
+
+[dependencies]
+wry = "0.57"
+tao = "0.37"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serialport = { version = "4", default-features = false }
+rust-embed = { version = "8", features = ["mime-guess"] }
+ttf-parser = "0.24"
+svgtypes = "0.15"
+roxmltree = "0.20"
+ureq = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+hayro = "0.8.0"
+pdf-extract = "0.12.1"
+
+[profile.release]
+opt-level = 3
+lto = false
+codegen-units = 16
+strip = true
