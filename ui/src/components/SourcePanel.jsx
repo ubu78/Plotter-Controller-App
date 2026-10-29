@@ -72,8 +72,11 @@ export default function SourcePanel({ t, pen, status, setLog, onConv }) {
         <label><span>{t('fillstep')}</span>{num('fillSpacing', tx.fillSpacing, st)} mm</label>
         <div className="hint">{t('fillstephint')}</div></>}
       {tx.fillMode === 'hatch' && <label><span>{t('hatchang')}</span>
-        <input type="range" min="0" max="90" step="5" value={tx.hatchAngle} onChange={e => st('hatchAngle', +e.target.value)} />
-        <b style={{ minWidth: 32, textAlign: 'right' }}>{tx.hatchAngle}°</b></label>}
+        <input type="number" min="0" max="180" step="any" style={{ width: 64 }} value={tx.hatchAngle}
+          onChange={e => { const v = +e.target.value; if (!isNaN(v)) st('hatchAngle', v); }} />
+        <input type="range" min="0" max="180" step="1" value={Math.min(180, Math.max(0, tx.hatchAngle))}
+          onChange={e => st('hatchAngle', +e.target.value)} />
+        <b style={{ minWidth: 30, textAlign: 'right' }}>{tx.hatchAngle}°</b></label>}
       <label><span>{t('start')}</span>{num('startX', tx.startX, st)}{num('startY', tx.startY, st)}
         <button className={pick ? 'pri' : ''} onClick={() => setPick(!pick)}>{pick ? t('picking') : t('pick')}</button></label>
       <label><span>{t('md')}</span><input type="checkbox" checked={tx.markdown} onChange={e => st('markdown', e.target.checked)} /></label>

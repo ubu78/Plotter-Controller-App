@@ -9,8 +9,12 @@ export default function ConnectionPanel({ t, status, send }) {
     <label><span>{t('port')}</span><select value={port} onChange={e => setPort(e.target.value)}>{ports.map(p => <option key={p.path} value={p.path}>{p.path} {p.name}</option>)}</select><button onClick={refresh}>↻</button></label>
     <label><span>{t('baud')}</span><input type="number" value={baud} onChange={e => setBaud(+e.target.value)} /></label>
     <div className="row"><button className="pri" onClick={() => api('connect', { port, baud })}>{t('connect')}</button>
-      <button onClick={() => api('disconnect', {})}>{t('disconnect')}</button>
-      <button onClick={() => send('$X')}>$X</button><button onClick={() => send('$H')}>$H</button></div>
+      <button onClick={() => api('disconnect', {})}>{t('disconnect')}</button></div>
+    <div className="safety">
+      <button title="$X — GRBL unlock" onClick={() => send('$X')}>$X<small>{t('unlock')}</small></button>
+      <button title="$H — homing cycle" onClick={() => send('$H')}>$H<small>{t('home')}</small></button>
+    </div>
+    <div className="hint">{t('safetyhint')}</div>
     <div id="pos">X{x.toFixed(2)} Y{y.toFixed(2)} Z{z.toFixed(2)}</div>
     <div id="bar"><i style={{ width: status.progress * 100 + '%' }} /></div></section>);
 }
