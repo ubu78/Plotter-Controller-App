@@ -12,6 +12,8 @@ const dispatch = m => {
     if (p) { pend.delete(m.id); m.error ? p.err(m.error) : p.ok(m.data); }
   }
   else if (m.t === 'ev') listeners.forEach(f => { try { f(m.data); } catch (e) { /* listener error must not break the bus */ } });
+  // Raw backend events arrive unwrapped: {"type":"status"|"log"|"settings", ...} — pass them through as-is.
+  else if (m.type) listeners.forEach(f => { try { f(m); } catch (e) { /* listener error must not break the bus */ } });
 };
 window.__push = dispatch; // replaces the placeholder queue installed by the shell
 (window.__pushq || []).forEach(dispatch);

@@ -23,7 +23,7 @@ const INDEX: &str = "plotter://app/index.html";
 // Placeholder queue: events that arrive before the UI bundle defines its own window.__push.
 const INIT_JS: &str = "window.__pushq = window.__pushq || []; window.__push = function (m) { window.__pushq.push(m); };";
 // Self-test: report DOM diagnostics back through the normal IPC channel (callbacks are unreliable here).
-const SELFTEST_INIT_JS: &str = "setTimeout(function () { try { var s = []; document.querySelectorAll('select').forEach(function (e) { s.push(e.options.length); }); window.ipc.postMessage(JSON.stringify({ id: 888888, path: 'selftest_report', method: 'POST', body: { pushed: window.__pushed || 0, sel: s } })); } catch (e) { if (window.ipc) window.ipc.postMessage(JSON.stringify({ id: 888888, path: 'selftest_report', method: 'POST', body: { exc: String(e) } })); } }, 6000);";
+const SELFTEST_INIT_JS: &str = "setTimeout(function () { try { var s = []; document.querySelectorAll('select').forEach(function (e) { s.push(e.options.length); }); var b = document.querySelector('.connstat'); window.ipc.postMessage(JSON.stringify({ id: 888888, path: 'selftest_report', method: 'POST', body: { pushed: window.__pushed || 0, sel: s, banner: b ? { cls: b.className, txt: b.textContent } : null } })); } catch (e) { if (window.ipc) window.ipc.postMessage(JSON.stringify({ id: 888888, path: 'selftest_report', method: 'POST', body: { exc: String(e) } })); } }, 6000);";
 
 fn data_dir() -> PathBuf { // keeps localStorage (lang, pen settings)
     let base = std::env::var("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|_| {
@@ -131,6 +131,7 @@ fn main() {
                         let mut v: Value = serde_json::from_str(rr).unwrap_or(json!({}));
                         v["pushes"] = ui.get("pushed").cloned().unwrap_or(json!(-1));
                         v["ui_selects"] = ui.get("sel").cloned().unwrap_or(json!(null));
+                        if let Some(b) = ui.get("banner") { v["ui_banner"] = b.clone(); }
                         if let Some(d) = ui.get("dbg") { v["ipc_dbg"] = d.clone(); }
                         if let Some(e) = ui.get("exc") { v["ui_exc"] = e.clone(); }
                         println!("SELFTEST {v}");

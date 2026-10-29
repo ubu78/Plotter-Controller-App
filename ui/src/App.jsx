@@ -24,6 +24,8 @@ export default function App() {
     document.documentElement.lang = lang; localStorage.lang = lang;
   }, [lang]);
   useEffect(() => { api('settings').then(j => setValues(j.values)); }, []);
+  // Sync the banner once on mount: even a missed push event can no longer leave a stale "Disconnected".
+  useEffect(() => { api('status').then(s => { if (s && typeof s.connected === 'boolean') setStatus(s); }).catch(() => {}); }, []);
   useEffect(() => onEvent(m => {
     if (m.type === 'status') setStatus(m.status);
     if (m.type === 'log') setLog(l => [...l.slice(-400), m.line]);
