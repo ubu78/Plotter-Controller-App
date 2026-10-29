@@ -9,6 +9,10 @@ pub struct Opt {
     pub z_feed: f64, pub servo_down: String, pub servo_up: String, pub landscape: bool, pub laser_off: bool, pub dwell: f64,
     // text
     pub font: String, pub size: f64, pub line_height: f64, pub markdown: bool, pub fill_mode: String,
+    /// Infill step for fill/hatch styles, mm; 0 = automatic from the font size
+    pub fill_spacing: f64,
+    /// Diagonal hatching angle in degrees (hatch style only)
+    pub hatch_angle: f64,
     pub start_x: f64, pub start_y: f64, pub page: Option<usize>,
     #[serde(skip)] pub keep_origin: bool,
 }
@@ -17,7 +21,7 @@ impl Default for Opt {
         Opt { paper: "A4".into(), paper_w: 0.0, paper_h: 0.0, margin: 0.0, scale: 100.0, center: false, offset_x: 0.0, offset_y: 0.0,
             feed: 3000.0, pen_mode: "servo".into(), z_up: 5.0, z_down: 0.0, z_feed: 500.0, servo_down: "M3 S255".into(), servo_up: "M5".into(),
             landscape: false, laser_off: true, dwell: 0.15, font: "Roboto".into(), size: 6.0, line_height: 1.4, markdown: false,
-            fill_mode: "pen".into(), start_x: 0.0, start_y: 0.0, page: None, keep_origin: false }
+            fill_mode: "pen".into(), fill_spacing: 0.0, hatch_angle: 45.0, start_x: 0.0, start_y: 0.0, page: None, keep_origin: false }
     }
 }
 

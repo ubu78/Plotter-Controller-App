@@ -2,9 +2,26 @@ import { useEffect, useState } from 'react';
 import { api } from '../api';
 import Preview from './Preview.jsx';
 const b64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 32768) s += String.fromCharCode.apply(null, u8.subarray(i, i + 32768)); return btoa(s); };
+// Mini previews of the four letter styles: the same "O" drawn in each style.
+const RING = 'M12 4.5 A7.5 7.5 0 1 0 12 19.5 A7.5 7.5 0 1 0 12 4.5 Z M12 8 A4 4 0 1 1 12 16 A4 4 0 1 1 12 8 Z';
+const STYLE_ICONS = {
+  pen: <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
+    <path d="M5 14 C7 7.5 15 5.5 17 9.5 C19 13.5 13 17 10 15 C7.2 13 9 9.5 12 9.5" /></svg>,
+  single: <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.2">
+    <circle cx="12" cy="12" r="7.5" /><circle cx="12" cy="12" r="4" /></svg>,
+  fill: <svg viewBox="0 0 24 24" width="24" height="24">
+    <defs><pattern id="pv-fill" width="1.8" height="1.8" patternUnits="userSpaceOnUse">
+      <path d="M0 0.9 H1.8" stroke="currentColor" strokeWidth="0.7" /></pattern></defs>
+    <path d={RING} fillRule="evenodd" fill="url(#pv-fill)" stroke="currentColor" strokeWidth="0.8" /></svg>,
+  hatch: <svg viewBox="0 0 24 24" width="24" height="24">
+    <defs><pattern id="pv-hatch" width="2.6" height="2.6" patternUnits="userSpaceOnUse">
+      <path d="M0 2.6 L2.6 0 M-0.65 0.65 L0.65 -0.65 M1.95 3.25 L3.25 1.95" stroke="currentColor" strokeWidth="0.7" /></pattern></defs>
+    <path d={RING} fillRule="evenodd" fill="url(#pv-hatch)" stroke="currentColor" strokeWidth="0.8" /></svg>,
+};
+const STYLES = [['pen', 'fmpen'], ['single', 'fmsingle'], ['fill', 'fmfill'], ['hatch', 'fmhatch']];
 export default function SourcePanel({ t, pen, status, setLog, onConv }) {
   const [o, setO] = useState({ paper: 'A4', margin: 0, scale: 100, center: false, feed: 3000, landscape: false, laserOff: true });
-  const [tx, setTx] = useState({ text: '', font: 'Roboto', size: 6, lineHeight: 1.4, markdown: false, fillMode: 'pen', startX: 0, startY: 0 });
+  const [tx, setTx] = useState({ text: '', font: 'Roboto', size: 6, lineHeight: 1.4, markdown: false, fillMode: 'pen', fillSpacing: 0, hatchAngle: 45, startX: 0, startY: 0 });
   const [fonts, setFonts] = useState([]); const [svg, setSvg] = useState('');
   const [mode, setMode] = useState('svg'); const [off, setOff] = useState([0, 0]); const [page, setPage] = useState(0); const [conv, setConv] = useState(null); const [pick, setPick] = useState(false); const [pdf, setPdf] = useState(''); const [pdfDraw, setPdfDraw] = useState(true);
   const set = (k, v) => setO(p => ({ ...p, [k]: v })); const st = (k, v) => setTx(p => ({ ...p, [k]: v }));
@@ -46,10 +63,17 @@ export default function SourcePanel({ t, pen, status, setLog, onConv }) {
       <label><span>{t('font')}</span><select value={tx.font} onChange={e => st('font', e.target.value)}>{fonts.map(f => <option key={f}>{f}</option>)}</select></label>
       <label><span>{t('fsize')}</span>{num('size', tx.size, st)}</label><label><span>{t('lh')}</span>{num('lineHeight', tx.lineHeight, st)}</label>
       <label><span>{t('speed')}</span>{num('feed', o.feed)} мм/мин</label>
-      <label><span>{t('style')}</span><select value={tx.fillMode} onChange={e => st('fillMode', e.target.value)}>
-        <option value="pen">{t('fmpen')}</option><option value="single">{t('fmsingle')}</option>
-        <option value="fill">{t('fmfill')}</option><option value="hatch">{t('fmhatch')}</option></select></label>
+      <div className="stylerow" role="radiogroup" aria-label={t('style')}>
+        {STYLES.map(([v, k]) => (<button key={v} className={tx.fillMode === v ? 'stybtn pri' : 'stybtn'} title={t('d' + v)} onClick={() => st('fillMode', v)}>
+          {STYLE_ICONS[v]}<span>{t(k)}</span></button>))}
+      </div>
       <div className="hint">{t('d' + tx.fillMode)}</div>
+      {(tx.fillMode === 'fill' || tx.fillMode === 'hatch') && <>
+        <label><span>{t('fillstep')}</span>{num('fillSpacing', tx.fillSpacing, st)} mm</label>
+        <div className="hint">{t('fillstephint')}</div></>}
+      {tx.fillMode === 'hatch' && <label><span>{t('hatchang')}</span>
+        <input type="range" min="0" max="90" step="5" value={tx.hatchAngle} onChange={e => st('hatchAngle', +e.target.value)} />
+        <b style={{ minWidth: 32, textAlign: 'right' }}>{tx.hatchAngle}°</b></label>}
       <label><span>{t('start')}</span>{num('startX', tx.startX, st)}{num('startY', tx.startY, st)}
         <button className={pick ? 'pri' : ''} onClick={() => setPick(!pick)}>{pick ? t('picking') : t('pick')}</button></label>
       <label><span>{t('md')}</span><input type="checkbox" checked={tx.markdown} onChange={e => st('markdown', e.target.checked)} /></label>

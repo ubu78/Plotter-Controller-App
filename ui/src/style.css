@@ -22,3 +22,7 @@ header h1{flex:0 1 auto}header{flex-wrap:wrap}header span{margin-left:auto}
 .axrow b{width:16px;font-size:14px}.axrow code{margin-left:auto;font:13px monospace}.axrow .work{font-size:9px;color:var(--mu);letter-spacing:.08em}
 .zbtn{padding:2px 7px}.wcs{font:12px monospace;background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:3px 8px;color:var(--mu)}
 .hint{font-size:12px;color:var(--mu);margin:2px 0 4px}
+.stylerow{display:flex;gap:6px;margin:4px 0}
+.stybtn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 2px;font-size:11px;line-height:1.15;min-width:0}
+.stybtn svg{display:block}
+input[type=range]{flex:1;min-width:0;padding:0;height:22px;accent-color:var(--ac)}

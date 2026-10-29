@@ -110,6 +110,11 @@ fn feed_mult(mode: &str) -> f64 {
     match mode { "single" => 1.5, "fill" => 0.5, "hatch" => 0.8, _ => 1.0 }
 }
 
+/// Infill step for fill/hatch: user override (`fill_spacing` > 0) or automatic from the font size.
+fn infill_step(o: &Opt, auto: f64, lo: f64, hi: f64) -> f64 {
+    if o.fill_spacing > 0.0 { o.fill_spacing.clamp(0.05, 10.0) } else { auto.clamp(lo, hi) }
+}
+
 pub fn text_to_conv(text: &str, o: &Opt) -> Result<Conv, String> {
     let mut warn = vec![];
     let data = load_font(&o.font, &mut warn)?;
@@ -158,7 +163,8 @@ pub fn text_to_conv(text: &str, o: &Opt) -> Result<Conv, String> {
                     if let Some(g) = face.glyph_index(ch) {
                         let mut ob = Outline::new(x, base, sz / upm); face.outline_glyph(g, &mut ob); ob.close();
                         if !ob.polys.is_empty() {
-                            let (sp, ang) = if fm == "fill" { ((sz / 15.0).clamp(0.3, 1.0), 0.0) } else { ((sz / 4.0).clamp(1.0, 3.0), 45.0) };
+                            // spacing: user setting wins over the automatic step; angle: 0° for solid fill, adjustable for hatch
+                            let (sp, ang) = if fm == "fill" { (infill_step(o, sz / 15.0, 0.3, 1.0), 0.0) } else { (infill_step(o, sz / 4.0, 1.0, 3.0), o.hatch_angle) };
                             polys.extend(fill_lines(&ob.polys, sp, ang));
                             polys.extend(ob.polys);
                         }
@@ -243,5 +249,37 @@ mod tests {
     #[test]
     fn pen_mode_is_the_default() {
         assert_eq!(Opt::default().fill_mode, "pen");
+    }
+
+    #[test]
+    fn fill_spacing_override_changes_density() {
+        ensure_test_font();
+        let mk = |sp: f64| {
+            let o = Opt { font: "DejaVu Sans".into(), fill_mode: "fill".into(), fill_spacing: sp, ..Default::default() };
+            text_to_conv("ШШ", &o).unwrap()
+        };
+        let dense = mk(0.25); let sparse = mk(1.2);
+        assert!(dense.gcode.len() > sparse.gcode.len() * 2, "0.25 mm fill must be much denser than 1.2 mm");
+        let auto = mk(0.0).gcode.len();
+        assert!(auto > sparse.gcode.len(), "auto default is denser than 1.2 mm");
+    }
+
+    #[test]
+    fn hatch_angle_changes_geometry() {
+        ensure_test_font();
+        let mk = |a: f64| {
+            let o = Opt { font: "DejaVu Sans".into(), fill_mode: "hatch".into(), hatch_angle: a, ..Default::default() };
+            text_to_conv("Ш", &o).unwrap()
+        };
+        let (a45, a0, a90) = (mk(45.0), mk(0.0), mk(90.0));
+        assert_ne!(a45.paths, a0.paths, "45° vs 0° hatch must differ");
+        assert_ne!(a45.paths, a90.paths, "45° vs 90° hatch must differ");
+    }
+
+    #[test]
+    fn infill_defaults_are_auto_and_45() {
+        let o = Opt::default();
+        assert_eq!(o.fill_spacing, 0.0, "0 = automatic spacing");
+        assert_eq!(o.hatch_angle, 45.0);
     }
 }
