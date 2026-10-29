@@ -33,3 +33,13 @@ input[type=range]{flex:1;min-width:0;padding:0;height:22px;accent-color:var(--ac
 .servorow input[type=range]{width:100%}
 .testrow{margin:8px 0 2px}.testrow button{flex:1;min-width:120px;padding:8px 10px;font-weight:600}
 .testrow button:hover{border-color:var(--ac);box-shadow:0 0 0 1px var(--ac) inset}
+.connstat{display:flex;gap:8px;align-items:center;margin:2px 0 8px;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;font-size:13px}
+.connstat i{width:10px;height:10px;border-radius:50%;background:var(--mu);flex:0 0 auto}
+.connstat b{font-size:13px}.connstat small{color:var(--mu);font:11px monospace}
+.connstat .csfix{margin-left:auto;font-size:11px;opacity:.85;text-align:right}
+.connstat.ok{border-color:rgba(46,125,50,.45);background:rgba(46,125,50,.1)}.connstat.ok i,.connstat.ok b{color:#1b8a3a}
+.connstat.err{border-color:rgba(198,40,40,.5);background:rgba(198,40,40,.12)}.connstat.err i,.connstat.err b{color:var(--dn)}
+.connstat.mid{border-color:rgba(178,106,0,.45);background:rgba(178,106,0,.1)}.connstat.mid i,.connstat.mid b{color:#b26a00}
+@keyframes csblink{50%{opacity:.2}}
+.connstat.err i{animation:csblink 1s steps(1) infinite}.connstat.mid i{animation:csblink 1.4s steps(1) infinite}
+@media(prefers-color-scheme:dark){.connstat.ok i,.connstat.ok b{color:#66bb6a}.connstat.mid i,.connstat.mid b{color:#ffb74d}}
