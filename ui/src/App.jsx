@@ -41,7 +41,7 @@ export default function App() {
     <main>
       <ConnectionPanel t={t} status={status} send={send} />
       <ManualPanel t={t} send={send} pen={pen} status={status} />
-      <PenPanel t={t} pen={pen} setPen={setPen} />
+      <PenPanel t={t} pen={pen} setPen={setPen} send={send} />
       <SourcePanel t={t} pen={pen} status={status} setLog={setLog} onConv={r => setGcode(r.gcode || '')} />
       <SettingsPanel t={t} lang={lang} values={values} send={send} />
       <GcodePanel t={t} gcode={gcode} />

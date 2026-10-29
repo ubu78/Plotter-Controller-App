@@ -31,3 +31,5 @@ input[type=range]{flex:1;min-width:0;padding:0;height:22px;accent-color:var(--ac
 .safety button small{font-size:10px;font-weight:500;opacity:.75;letter-spacing:.03em;text-transform:uppercase}
 .servorow{display:flex;flex-direction:column;gap:2px;margin:4px 0;border:1px solid var(--bd);border-radius:6px;padding:4px 8px}
 .servorow input[type=range]{width:100%}
+.testrow{margin:8px 0 2px}.testrow button{flex:1;min-width:120px;padding:8px 10px;font-weight:600}
+.testrow button:hover{border-color:var(--ac);box-shadow:0 0 0 1px var(--ac) inset}
