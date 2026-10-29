@@ -69,6 +69,30 @@ fn thin(g: &mut [u8], w: usize, h: usize) {
     }
 }
 
+/// Remove short dead-end tips (<= k px) growing out of a junction. Thinning leaves such
+/// spurs next to stem-arch joins and they fork the natural skeleton ("n" lost its
+/// stem-to-arch link, so pen mode chained the halves with a baseline bar -> closed ring).
+fn despine(g: &mut [u8], w: usize, h: usize, k: usize) {
+    loop {
+        let mut del: Vec<usize> = vec![];
+        for i in 0..g.len() {
+            if g[i] == 0 || nb(g, w, h, i).len() != 1 { continue; } // free endpoints only
+            let mut path = vec![i]; let mut hit = false;
+            for _ in 0..k {
+                let prev = *path.last().unwrap();
+                let prev2 = if path.len() >= 2 { path[path.len() - 2] } else { usize::MAX };
+                match nb(g, w, h, prev).into_iter().find(|&q| q != prev2) {
+                    Some(q) => { path.push(q); if nb(g, w, h, q).len() >= 3 { hit = true; break; } }
+                    None => break,
+                }
+            }
+            if hit { del.extend_from_slice(&path[..path.len() - 1]); } // keep the junction itself
+        }
+        if del.is_empty() { break; }
+        for i in del { g[i] = 0; }
+    }
+}
+
 fn nb(g: &[u8], w: usize, h: usize, i: usize) -> Vec<usize> {
     let (x, y) = ((i % w) as isize, (i / w) as isize); let mut o = vec![];
     for dy in -1..=1 { for dx in -1..=1 {
@@ -129,6 +153,7 @@ pub fn glyph_strokes(face: &ttf_parser::Face, ch: char) -> Polys {
 /// Any binary bitmap (1 = ink) -> single-line strokes in pixel coordinates (also used for PDF pages).
 pub fn bitmap_strokes(g: &mut [u8], w: usize, h: usize, eps: f64, spur: usize) -> Polys {
     thin(g, w, h);
+    despine(g, w, h, 3);
     let pix: Vec<usize> = (0..g.len()).filter(|&i| g[i] != 0).collect();
     let (mut vis, mut out) = (vec![false; g.len()], vec![]);
     for &i in &pix { if nb(g, w, h, i).len() == 1 && !vis[i] { walk(g, w, h, i, &mut vis, &mut out, spur); } }
@@ -183,6 +208,42 @@ mod tests {
         let i = glyph_strokes(&face, 'i');
         assert!(i.len() >= 2, "i has a body and a dot");
     }
+
+    #[test]
+    fn despine_removes_junction_spurs() {
+        // thinning artifact replica (Roboto "n"): a 1px spur stuck to a stroke tip,
+        // 3 steps away from a junction; intermediate pixels have exactly 2 neighbours.
+        // Line ends further than k steps from the junction must survive.
+        let (w, h) = (12, 16);
+        let mut g = vec![0u8; w * h];
+        for y in 3..=14 { g[y * w + 3] = 1; }   // vertical wall x=3
+        for x in 3..=5 { g[8 * w + x] = 1; }    // stem y=8, junction at (3,8)
+        g[9 * w + 6] = 1;                       // spur tip (6,9) off the stem tip (5,8)
+        despine(&mut g, w, h, 3);
+        assert_eq!(g[9 * w + 6], 0, "spur tip removed");
+        assert_eq!(g[8 * w + 5], 0, "stroke tail next to the spur removed");
+        assert_eq!(g[8 * w + 3], 1, "junction kept");
+        assert_eq!(g[3 * w + 3], 1, "wall top kept");
+        assert_eq!(g[14 * w + 3], 1, "wall bottom kept");
+    }
+
+    #[test]
+    fn glyph_n_is_not_drawn_as_a_ring() {
+        // regression: sans-serif "n" used to split into stem + arch strokes that pen mode
+        // chained with a baseline bar, closing the letter into a square ring
+        let data = std::fs::read("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf").unwrap();
+        let face = ttf_parser::Face::parse(&data, 0).unwrap();
+        for ch in ['n', '\u{43F}', '\u{438}'] {
+            let st = glyph_strokes(&face, ch);
+            assert!(!st.is_empty(), "{ch} must have strokes");
+            for s in &st {
+                let d = (s[0][0] - s[s.len() - 1][0]).hypot(s[0][1] - s[s.len() - 1][1]);
+                assert!(d > 0.15, "{ch}: stroke must not close into a ring (gap {d:.3} em)");
+            }
+        }
+    }
+
+
 
     #[test]
     fn missing_glyph_is_empty() {

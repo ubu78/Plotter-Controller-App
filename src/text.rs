@@ -54,25 +54,28 @@ fn dedupe(p: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
     o
 }
 
-/// Join the strokes of one glyph into a single continuous path (nearest-endpoint chaining):
-/// the pen runs along the middle of every stroke without lifting, like handwriting.
-fn chain(mut s: Polys) -> Polys {
+/// Join the strokes of one glyph into pen paths (nearest-endpoint chaining): the pen runs
+/// along the middle of every stroke like handwriting. Strokes merge only across tiny gaps
+/// (<= `join` mm); a bigger gap stays a separate path with a pen-up travel move — drawing
+/// the connector pen-down produced a visible bar that closed "n" into a square ring.
+fn chain(mut s: Polys, join: f64) -> Polys {
     if s.len() < 2 { return s; }
+    let mut out: Polys = vec![];
     let mut cur = dedupe(s.remove(0));
     while !s.is_empty() {
         let e = *cur.last().unwrap();
-        let bi = s.iter().enumerate().min_by(|x, y| {
-            let d = |p: &[[f64; 2]], r: bool| { let q = if r { p[p.len() - 1] } else { p[0] }; (e[0] - q[0]).hypot(e[1] - q[1]) };
-            let da = d(x.1, false).min(d(x.1, true)); let db = d(y.1, false).min(d(y.1, true));
-            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
-        }).unwrap().0;
+        let (bi, rev, gap) = s.iter().enumerate().map(|(i, p)| {
+            let d0 = (e[0] - p[0][0]).hypot(e[1] - p[0][1]);
+            let d1 = (e[0] - p[p.len() - 1][0]).hypot(e[1] - p[p.len() - 1][1]);
+            if d1 < d0 { (i, true, d1) } else { (i, false, d0) }
+        }).min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal)).unwrap();
         let mut next = s.remove(bi);
-        let d0 = (e[0] - next[0][0]).hypot(e[1] - next[0][1]);
-        let d1 = (e[0] - next[next.len() - 1][0]).hypot(e[1] - next[next.len() - 1][1]);
-        if d1 < d0 { next.reverse(); }
-        cur.extend(next); cur = dedupe(cur);
+        if rev { next.reverse(); }
+        if gap <= join { cur.extend(next); cur = dedupe(cur); }
+        else { out.push(std::mem::take(&mut cur)); cur = next; }
     }
-    vec![cur]
+    out.push(cur);
+    out
 }
 
 /// Even-odd infill of closed polygons: straight lines every `spacing` mm at `angle` degrees,
@@ -154,7 +157,7 @@ pub fn text_to_conv(text: &str, o: &Opt) -> Result<Conv, String> {
                 "pen" => { // one continuous line through the stroke centres, handwritten look
                     let st: Polys = glyph_strokes(&face, ch).into_iter()
                         .map(|s| s.iter().map(|p| [x + p[0] * sz, base + p[1] * sz]).collect()).collect();
-                    polys.extend(chain(st));
+                    polys.extend(chain(st, 0.1 * sz));
                 }
                 "single" => { // separate centre-line stroke per pen-down: fast thin contour
                     for st in glyph_strokes(&face, ch) { polys.push(st.iter().map(|p| [x + p[0] * sz, base + p[1] * sz]).collect()); }
@@ -221,14 +224,26 @@ mod tests {
     }
 
     #[test]
-    fn pen_mode_chains_strokes_of_a_glyph() {
+    fn chain_merges_only_tiny_gaps() {
+        // pen mode chains glyph strokes like handwriting, but only across tiny gaps:
+        // a long pen-down connector drew a visible bar and closed "n" into a ring
+        let near = vec![vec![[0.0, 0.0], [1.0, 0.0]], vec![[1.05, 0.0], [2.0, 0.5]]];
+        assert_eq!(chain(near, 0.1).len(), 1, "tiny gap merges into one pen path");
+        let far = vec![vec![[0.0, 0.0], [1.0, 0.0]], vec![[3.0, 0.0], [4.0, 0.5]]];
+        assert_eq!(chain(far, 0.1).len(), 2, "big gap stays a separate path (pen-up travel)");
+        let rev = vec![vec![[0.0, 0.0], [1.0, 0.0]], vec![[2.0, 0.5], [1.05, 0.0]]];
+        assert_eq!(chain(rev, 0.1).len(), 1, "stroke direction does not matter");
+    }
+
+    #[test]
+    fn pen_mode_needs_no_more_pen_downs_than_single() {
         ensure_test_font();
         let downs = |fm: &str| {
             let o = Opt { font: "DejaVu Sans".into(), fill_mode: fm.into(), ..Default::default() };
             text_to_conv("шш", &o).unwrap().gcode.matches("M3 S255").count()
         };
         let (pen, single) = (downs("pen"), downs("single"));
-        assert!(pen > 0 && pen < single, "pen must chain strokes: pen={pen} single={single}");
+        assert!(pen > 0 && pen <= single, "pen must not be worse than single: pen={pen} single={single}");
     }
 
     #[test]
@@ -244,6 +259,20 @@ mod tests {
         assert!(hatch.gcode.contains("F2400"), "hatch feed = 3000 * 0.8");
         assert!(fill.gcode.len() > single.gcode.len() * 2, "dense fill must add many lines");
         assert!(hatch.gcode.len() > single.gcode.len(), "hatch must add infill lines");
+    }
+
+    #[test]
+    fn pen_mode_n_is_not_a_closed_ring() {
+        // regression: "n"/"п" used to draw as a square ring — the skeleton split into
+        // stem + arch and pen-down chaining added a baseline bar between them
+        ensure_test_font();
+        let o = Opt { font: "DejaVu Sans".into(), size: 10.0, ..Default::default() };
+        let c = text_to_conv("nn", &o).unwrap();
+        assert!(!c.paths.is_empty());
+        for p in &c.paths {
+            let d = (p[0][0] - p[p.len() - 1][0]).hypot(p[0][1] - p[p.len() - 1][1]);
+            assert!(d > 1.5, "pen path must not close into a ring (gap {d:.2} mm)");
+        }
     }
 
     #[test]
