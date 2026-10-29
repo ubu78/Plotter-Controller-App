@@ -1,5 +1,5 @@
-:root{--bg:#f6f6f4;--card:#fff;--tx:#1d1d1b;--mu:#6b6b66;--ac:#1f6feb;--bd:#d9d9d4;--dn:#c62828}
-@media(prefers-color-scheme:dark){:root{--bg:#161614;--card:#21211f;--tx:#ececE8;--mu:#9a9a94;--ac:#58a6ff;--bd:#3a3a36;--dn:#ef5350}}
+:root{--bg:#f6f6f4;--card:#fff;--tx:#1d1d1b;--mu:#6b6b66;--ac:#1f6feb;--bd:#d9d9d4;--dn:#c62828;--res:#e07b28}
+@media(prefers-color-scheme:dark){:root{--bg:#161614;--card:#21211f;--tx:#ececE8;--mu:#9a9a94;--ac:#58a6ff;--bd:#3a3a36;--dn:#ef5350;--res:#f08c3a}}
 *{box-sizing:border-box}body{margin:0;font:14px system-ui,sans-serif;background:var(--bg);color:var(--tx)}
 header{display:flex;gap:12px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--bd);background:var(--card)}
 header h1{font-size:16px;margin:0;flex:1}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;padding:12px}
@@ -8,7 +8,11 @@ h2{font-size:13px;margin:0 0 8px;color:var(--mu);text-transform:uppercase;letter
 label{display:flex;gap:6px;align-items:center;margin:4px 0}label span{min-width:90px;color:var(--mu)}
 input,select,button,textarea{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:5px 8px}
 input[type=number]{width:80px}button{cursor:pointer}button:hover{border-color:var(--ac)}
+button:disabled{opacity:.45;cursor:not-allowed}button:disabled:hover{border-color:var(--bd)}
 .pri{background:var(--ac);color:#fff;border-color:var(--ac)}.stop{background:var(--dn);color:#fff;border-color:var(--dn)}
+.res{background:var(--res);color:#fff;border-color:var(--res)}
+.runrow{margin-top:8px}.runrow button{flex:1;min-width:0;font-weight:600}
+.fovval{margin-left:auto;font:13px monospace;color:var(--mu);padding-right:4px}
 .row{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}.pad{display:grid;grid-template-columns:repeat(3,44px);gap:4px;justify-content:center}
 .pad button{height:40px}#log{height:180px;overflow:auto;background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:6px;font:12px monospace;white-space:pre-wrap}
 canvas{width:100%;cursor:move;touch-action:none;background:#fff;border:1px solid var(--bd);border-radius:6px}.warn{color:#b26a00;font-size:12px}

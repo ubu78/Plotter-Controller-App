@@ -44,11 +44,6 @@ export default function SourcePanel({ t, pen, status, setLog, onConv }) {
       <label><span>{t('land')}</span><input type="checkbox" checked={o.landscape} onChange={e => set('landscape', e.target.checked)} /></label>
       <label><span>{t('laser')}</span><input type="checkbox" checked={o.laserOff} onChange={e => set('laserOff', e.target.checked)} /></label>
       <div className="row"><button className="pri" onClick={() => run()}>{t('convert')}</button>
-        <button onClick={() => conv?.gcode ? api('stream', { gcode: conv.gcode }) : setLog(l => [...l, t('noconv')])}>{t('plot')}</button>
-        <button onClick={() => api('hold', {})}>❚❚</button><button onClick={() => api('resume', {})}>▶</button>
-        <button title="F −10%" onClick={() => api('feedov', { kind: 'minus' })}>F−</button>
-        <button title="F 100%" onClick={() => api('feedov', { kind: 'reset' })}>F%</button>
-        <button title="F +10%" onClick={() => api('feedov', { kind: 'plus' })}>F+</button>
         <button onClick={() => { if (!conv?.gcode) return setLog(l => [...l, t('noconv')]);
           api('savefile', { name: 'drawing.gcode', content: conv.gcode }).then(r => setLog(l => [...l, '→ ' + (r?.path || '')]), e => setLog(l => [...l, 'ERR ' + e])); }}>{t('save')}</button></div>
       <div className="warn">{(conv?.warnings || []).join(' • ')}</div></section>

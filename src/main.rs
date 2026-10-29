@@ -191,6 +191,19 @@ fn selftest(g: Arc<Grbl>, proxy: EventLoopProxy<String>) {
     }
     r.insert("afterConnect".into(), json!(after));
 
+    // feed override round-trip: two F+ clicks -> the mock board reports Ov:120 in the status line
+    let mut feedov = false;
+    if conn {
+        let _ = call(&g, "POST", "feedov", json!({"kind": "plus"}));
+        let _ = call(&g, "POST", "feedov", json!({"kind": "plus"}));
+        let t0 = std::time::Instant::now();
+        while t0.elapsed() < Duration::from_secs(3) {
+            if g.status().ov == 120.0 { feedov = true; break; }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    r.insert("feedov".into(), json!(feedov));
+
     let _ = proxy.send_event(format!("SELFTEST {}", Value::Object(r)));
     // watchdog: if the page never reports, finish anyway
     std::thread::sleep(Duration::from_secs(15));

@@ -52,7 +52,7 @@ pub fn handle(g: &Arc<Grbl>, method: &str, path: &str, body: Value) -> Result<Va
         ("POST", "stream") => { let b: Stream = serde_json::from_value(body).map_err(|e| e.to_string())?; g.stream(&b.gcode); Ok(json!({"ok": true})) }
         ("POST", "hold") => { g.hold(); Ok(json!({"ok": true})) }
         ("POST", "resume") => { g.resume(); Ok(json!({"ok": true})) }
-        ("POST", "feedov") => { match body["kind"].as_str().unwrap_or("") { "plus" => g.feed_ov(0x91), "minus" => g.feed_ov(0x88), _ => g.feed_ov(0x90) }; Ok(json!({"ok": true})) }
+        ("POST", "feedov") => { match body["kind"].as_str().unwrap_or("") { "plus" => g.feed_ov(0x91), "minus" => g.feed_ov(0x92), _ => g.feed_ov(0x90) }; Ok(json!({"ok": true})) }
         ("POST", "stop") => { g.reset(); Ok(json!({"ok": true})) }
         ("POST", "jogcancel") => { g.jog_cancel(); Ok(json!({"ok": true})) }
         ("POST", "svg") => { let b: Conv = serde_json::from_value(body).map_err(|e| e.to_string())?; svg::svg_to_conv(&b.svg, &b.options).and_then(conv_json) }

@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::{thread, time::Duration};
 
 #[derive(Serialize, Clone)]
-pub struct Status { pub connected: bool, pub state: String, pub wpos: [f64; 3], pub wco: [f64; 3], pub progress: f64 }
+pub struct Status { pub connected: bool, pub state: String, pub wpos: [f64; 3], pub wco: [f64; 3], pub progress: f64, pub ov: f64 }
 
 /// Event channel: status / log / settings as JSON strings, one consumer (the UI pump in main.rs).
 pub struct Bus { tx: Sender<String> }
@@ -28,7 +28,7 @@ fn triple(v: &str) -> [f64; 3] { let mut o = [0.0; 3]; for (i, s) in v.split(','
 impl Grbl {
     pub fn new() -> (Arc<Self>, Receiver<String>) {
         let (tx, rx) = mpsc::channel();
-        let st = Status { connected: false, state: "Disconnected".into(), wpos: [0.0; 3], wco: [0.0; 3], progress: 0.0 };
+        let st = Status { connected: false, state: "Disconnected".into(), wpos: [0.0; 3], wco: [0.0; 3], progress: 0.0, ov: 100.0 };
         (Arc::new(Grbl { inner: Mutex::new(Inner { port: None, queue: VecDeque::new(), busy: false, streaming: false, total: 0, sent: 0, st, settings: BTreeMap::new(), gen: 0 }), bus: Bus { tx } }), rx)
     }
     fn log(&self, l: String) { self.bus.send(json!({"type": "log", "line": l}).to_string()); }
@@ -83,7 +83,8 @@ impl Grbl {
             for x in &f[1..] {
                 if let Some((k, v)) = x.split_once(':') {
                     match k { "WCO" => i.st.wco = triple(v), "WPos" => i.st.wpos = triple(v),
-                        "MPos" => { let m = triple(v); for n in 0..3 { i.st.wpos[n] = m[n] - i.st.wco[n]; } } _ => {} }
+                        "MPos" => { let m = triple(v); for n in 0..3 { i.st.wpos[n] = m[n] - i.st.wco[n]; } }
+                        "Ov" => i.st.ov = triple(v)[0], _ => {} }
                 }
             }
             i.st.progress = if i.total > 0 { i.sent as f64 / i.total as f64 } else { 0.0 };
@@ -114,7 +115,7 @@ impl Grbl {
     fn rt(&self, b: &[u8]) { if let Some(p) = self.inner.lock().unwrap().port.as_mut() { let _ = p.write_all(b); } }
     pub fn hold(&self) { self.rt(b"!"); }
     pub fn resume(&self) { self.rt(b"~"); }
-    /// Real-time feed override (GRBL 1.1): 0x91 = +10%, 0x88 = -10%, 0x90 = set 100%.
+    /// Real-time feed override (GRBL 1.1): 0x91 = +10%, 0x92 = -10%, 0x90 = set 100%.
     pub fn feed_ov(&self, b: u8) { self.rt(&[b]); }
     pub fn reset(&self) { { let mut i = self.inner.lock().unwrap(); Self::reset_state(&mut i); } self.rt(&[0x18]); }
     pub fn jog_cancel(&self) { self.inner.lock().unwrap().queue.clear(); self.rt(&[0x85]); }

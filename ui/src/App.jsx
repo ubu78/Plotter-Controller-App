@@ -11,7 +11,7 @@ import PenPanel, { DEFAULT_PEN } from './components/PenPanel.jsx';
 
 export default function App() {
   const [lang, setLang] = useState(detectLang());
-  const [status, setStatus] = useState({ state: '—', wpos: [0, 0, 0], progress: 0, connected: false });
+  const [status, setStatus] = useState({ state: '—', wpos: [0, 0, 0], progress: 0, connected: false, ov: 100 });
   const [log, setLog] = useState([]);
   const [values, setValues] = useState({});
   const [stopped, setStopped] = useState(false);
@@ -41,7 +41,7 @@ export default function App() {
       <button className="stop" onClick={() => api('stop', {})}>{t('estop')}</button>
       <button onClick={quit}>{t('quit')}</button></header>
     <main>
-      <ConnectionPanel t={t} status={status} send={send} />
+      <ConnectionPanel t={t} status={status} send={send} gcode={gcode} setLog={setLog} />
       <ManualPanel t={t} send={send} pen={pen} status={status} />
       <PenPanel t={t} pen={pen} setPen={setPen} send={send} />
       <SourcePanel t={t} pen={pen} status={status} setLog={setLog} onConv={r => setGcode(r.gcode || '')} />
