@@ -23,7 +23,47 @@ const INDEX: &str = "plotter://app/index.html";
 // Placeholder queue: events that arrive before the UI bundle defines its own window.__push.
 const INIT_JS: &str = "window.__pushq = window.__pushq || []; window.__push = function (m) { window.__pushq.push(m); };";
 // Self-test: report DOM diagnostics back through the normal IPC channel (callbacks are unreliable here).
-const SELFTEST_INIT_JS: &str = "setTimeout(function () { try { var s = []; document.querySelectorAll('select').forEach(function (e) { s.push(e.options.length); }); var b = document.querySelector('.connstat'); window.ipc.postMessage(JSON.stringify({ id: 888888, path: 'selftest_report', method: 'POST', body: { pushed: window.__pushed || 0, sel: s, banner: b ? { cls: b.className, txt: b.textContent } : null } })); } catch (e) { if (window.ipc) window.ipc.postMessage(JSON.stringify({ id: 888888, path: 'selftest_report', method: 'POST', body: { exc: String(e) } })); } }, 6000);";
+// Includes a G-code editor round-trip: click Edit, type via a native value setter, click Done, verify the preview.
+const SELFTEST_INIT_JS: &str = "setTimeout(function () {
+  var rep = function (body) { try { window.ipc.postMessage(JSON.stringify({ id: 888888, path: 'selftest_report', method: 'POST', body: body })); } catch (e) {} };
+  try {
+    var s = []; document.querySelectorAll('select').forEach(function (e) { s.push(e.options.length); });
+    var b = document.querySelector('.connstat');
+    var body = { pushed: window.__pushed || 0, sel: s, banner: b ? { cls: b.className, txt: b.textContent } : null };
+    try {
+      var gc = {};
+      gc.load_input = !!document.querySelector('input[accept*=gcode]');
+      var pre = document.getElementById('gcode');
+      var sec = pre ? pre.closest('section') : null;
+      var ed = null;
+      if (sec) sec.querySelectorAll('button').forEach(function (x) { if (!ed && /edit|редактир|muuda/i.test(x.textContent)) ed = x; });
+      gc.edit_btn = !!ed;
+      body.gcheck = gc;
+      if (ed) {
+        ed.click();
+        setTimeout(function () {
+          var ta = sec.querySelector('textarea.gcodeedit');
+          gc.textarea = !!ta;
+          if (!ta) return rep(body);
+          var d = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
+          d.set.call(ta, 'G21\\nG90\\nG0 X10 Y10\\nG1 X50 Y30 F3000\\nG1 X10 Y10\\nM5');
+          ta.dispatchEvent(new Event('input', { bubbles: true }));
+          gc.typed = ta.value.indexOf('G0 X10') >= 0;
+          setTimeout(function () {
+            ed.click();
+            setTimeout(function () {
+              var p2 = document.getElementById('gcode');
+              gc.pre_after = p2 ? p2.textContent.indexOf('G0 X10') >= 0 : false;
+              rep(body);
+            }, 150);
+          }, 150);
+        }, 150);
+        return;
+      }
+    } catch (e2) { body.gcheck = { exc: String(e2) }; }
+    rep(body);
+  } catch (e) { rep({ exc: String(e) }); }
+}, 6000);";
 
 fn data_dir() -> PathBuf { // keeps localStorage (lang, pen settings)
     let base = std::env::var("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|_| {
@@ -132,10 +172,15 @@ fn main() {
                         v["pushes"] = ui.get("pushed").cloned().unwrap_or(json!(-1));
                         v["ui_selects"] = ui.get("sel").cloned().unwrap_or(json!(null));
                         if let Some(b) = ui.get("banner") { v["ui_banner"] = b.clone(); }
+                        if let Some(d) = ui.get("gcheck") { v["ui_gcheck"] = d.clone(); }
                         if let Some(d) = ui.get("dbg") { v["ipc_dbg"] = d.clone(); }
                         if let Some(e) = ui.get("exc") { v["ui_exc"] = e.clone(); }
                         println!("SELFTEST {v}");
                         g.disconnect();
+                        // PLOTTER_SELFTEST_HOLD=<secs>: keep the window on screen for screenshots
+                        if let Ok(h) = std::env::var("PLOTTER_SELFTEST_HOLD") {
+                            if let Ok(n) = h.parse::<u64>() { std::thread::sleep(Duration::from_secs(n)); }
+                        }
                         *cf = ControlFlow::Exit;
                         rep_rust = None; // prevent double print
                     }
