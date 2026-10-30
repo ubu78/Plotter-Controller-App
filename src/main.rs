@@ -24,12 +24,33 @@ const INDEX: &str = "plotter://app/index.html";
 const INIT_JS: &str = "window.__pushq = window.__pushq || []; window.__push = function (m) { window.__pushq.push(m); };";
 // Self-test: report DOM diagnostics back through the normal IPC channel (callbacks are unreliable here).
 // Includes a G-code editor round-trip: click Edit, type via a native value setter, click Done, verify the preview.
+// Includes an unlock-button round-trip through the REAL transport: click the actual $X button,
+// then count '> $X' lines in the console log. 0.5.9 shipped a GET/POST route mismatch that made
+// the button silently do nothing while the Rust-side POST selftest stayed green — this UI half
+// exists so that class of bug can never pass again.
 const SELFTEST_INIT_JS: &str = "setTimeout(function () {
   var rep = function (body) { try { window.ipc.postMessage(JSON.stringify({ id: 888888, path: 'selftest_report', method: 'POST', body: body })); } catch (e) {} };
   try {
     var s = []; document.querySelectorAll('select').forEach(function (e) { s.push(e.options.length); });
     var b = document.querySelector('.connstat');
     var body = { pushed: window.__pushed || 0, sel: s, banner: b ? { cls: b.className, txt: b.textContent } : null };
+    var ux = function (done) { // click the real $X button, verify a NEW '> $X' line reached the log
+      try {
+        var xb = null;
+        document.querySelectorAll('button[title]').forEach(function (x) { if (!xb && x.title.indexOf('$X') >= 0) xb = x; });
+        body.unlock_btn = { found: !!xb };
+        if (!xb) return done();
+        var cnt = function (t) { var n = 0, i = 0; while ((i = t.indexOf('> $X', i)) >= 0) { n++; i += 4; } return n; };
+        var lg = document.getElementById('log');
+        var before = cnt(lg ? lg.textContent : '');
+        xb.click();
+        setTimeout(function () {
+          var lg2 = document.getElementById('log');
+          body.unlock_btn.sent = cnt(lg2 ? lg2.textContent : '') > before;
+          done();
+        }, 400);
+      } catch (e3) { body.unlock_btn = { exc: String(e3) }; done(); }
+    };
     try {
       var gc = {};
       gc.load_input = !!document.querySelector('input[accept*=gcode]');
@@ -44,7 +65,7 @@ const SELFTEST_INIT_JS: &str = "setTimeout(function () {
         setTimeout(function () {
           var ta = sec.querySelector('textarea.gcodeedit');
           gc.textarea = !!ta;
-          if (!ta) return rep(body);
+          if (!ta) return ux(function () { rep(body); });
           var d = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
           d.set.call(ta, 'G21\\nG90\\nG0 X10 Y10\\nG1 X50 Y30 F3000\\nG1 X10 Y10\\nM5');
           ta.dispatchEvent(new Event('input', { bubbles: true }));
@@ -54,14 +75,14 @@ const SELFTEST_INIT_JS: &str = "setTimeout(function () {
             setTimeout(function () {
               var p2 = document.getElementById('gcode');
               gc.pre_after = p2 ? p2.textContent.indexOf('G0 X10') >= 0 : false;
-              rep(body);
+              ux(function () { rep(body); });
             }, 150);
           }, 150);
         }, 150);
         return;
       }
     } catch (e2) { body.gcheck = { exc: String(e2) }; }
-    rep(body);
+    ux(function () { rep(body); });
   } catch (e) { rep({ exc: String(e) }); }
 }, 6000);";
 
@@ -173,6 +194,7 @@ fn main() {
                         v["ui_selects"] = ui.get("sel").cloned().unwrap_or(json!(null));
                         if let Some(b) = ui.get("banner") { v["ui_banner"] = b.clone(); }
                         if let Some(d) = ui.get("gcheck") { v["ui_gcheck"] = d.clone(); }
+                        if let Some(d) = ui.get("unlock_btn") { v["ui_unlock_btn"] = d.clone(); }
                         if let Some(d) = ui.get("dbg") { v["ipc_dbg"] = d.clone(); }
                         if let Some(e) = ui.get("exc") { v["ui_exc"] = e.clone(); }
                         println!("SELFTEST {v}");
@@ -236,6 +258,31 @@ fn selftest(g: Arc<Grbl>, proxy: EventLoopProxy<String>) {
     }
     r.insert("afterConnect".into(), json!(after));
 
+    // Unlock round-trip: raise an alarm on the mock board (a real GRBL leaves the in-flight
+    // line unanswered, wedging the queue). $X must go straight to the wire and the board
+    // must return to Idle. Runs early on purpose: it must be finished before the UI half of
+    // the selftest clicks the real $X button at t=6s (see SELFTEST_INIT_JS).
+    let mut unlock = false;
+    if conn {
+        let _ = call(&g, "POST", "send", json!({"line": "$ALARM"}));
+        let t0 = std::time::Instant::now();
+        let mut alarm_seen = false;
+        while t0.elapsed() < Duration::from_secs(3) {
+            if g.status().state == "Alarm" { alarm_seen = true; break; }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if alarm_seen {
+            let _ = call(&g, "POST", "send", json!({"line": "G0 X1 Y1"})); // locked board: never answered
+            let _ = call(&g, "POST", "unlock", json!({}));
+            let t0 = std::time::Instant::now();
+            while t0.elapsed() < Duration::from_secs(3) {
+                if g.status().state == "Idle" { unlock = true; break; }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+    r.insert("unlock".into(), json!(unlock));
+
     // feed override round-trip: two F+ clicks -> the mock board reports Ov:120 in the status line
     let mut feedov = false;
     if conn {
@@ -261,30 +308,6 @@ fn selftest(g: Arc<Grbl>, proxy: EventLoopProxy<String>) {
         }
     }
     r.insert("wcs".into(), json!(wcs));
-
-    // Unlock round-trip: raise an alarm on the mock board (a real GRBL leaves the in-flight
-    // line unanswered, wedging the queue). $X must go straight to the wire and the board
-    // must return to Idle — this is the regression test for the "unlock button stopped working".
-    let mut unlock = false;
-    if conn {
-        let _ = call(&g, "POST", "send", json!({"line": "$ALARM"}));
-        let t0 = std::time::Instant::now();
-        let mut alarm_seen = false;
-        while t0.elapsed() < Duration::from_secs(3) {
-            if g.status().state == "Alarm" { alarm_seen = true; break; }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        if alarm_seen {
-            let _ = call(&g, "POST", "send", json!({"line": "G0 X1 Y1"})); // locked board: never answered
-            let _ = call(&g, "POST", "unlock", json!({}));
-            let t0 = std::time::Instant::now();
-            while t0.elapsed() < Duration::from_secs(3) {
-                if g.status().state == "Idle" { unlock = true; break; }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-        }
-    }
-    r.insert("unlock".into(), json!(unlock));
 
     let _ = proxy.send_event(format!("SELFTEST {}", Value::Object(r)));
     // watchdog: if the page never reports, finish anyway

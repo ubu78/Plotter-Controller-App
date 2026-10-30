@@ -127,7 +127,7 @@ impl Grbl {
     /// write them to the wire immediately, even if another line is still unanswered.
     pub fn send_now(&self, line: &str) {
         let mut i = self.inner.lock().unwrap();
-        if i.port.is_none() { return; }
+        if i.port.is_none() { self.log("-- not connected: connect first --".into()); return; }
         i.busy = true; // the ok/error reply releases it like any normal line
         self.log(format!("> {line}"));
         if let Some(p) = i.port.as_mut() { let _ = p.write_all(format!("{line}\n").as_bytes()); }

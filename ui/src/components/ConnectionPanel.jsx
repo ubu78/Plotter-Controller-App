@@ -24,8 +24,10 @@ export default function ConnectionPanel({ t, status, send, gcode, setLog }) {
     <div className="row"><button className="pri" onClick={() => api('connect', { port, baud })}>{t('connect')}</button>
       <button onClick={() => api('disconnect', {})}>{t('disconnect')}</button></div>
     <div className="safety">
-      <button title="$X — GRBL unlock" onClick={() => api('unlock')}>$X<small>{t('unlock')}</small></button>
-      <button title="$H — homing cycle" onClick={() => api('home')}>$H<small>{t('home')}</small></button>
+      {/* body argument is mandatory: api(p, b) sends POST only when b is present,
+          and unlock/home are POST routes — api('unlock', {}) alone goes out as GET and dies. */}
+      <button title="$X — GRBL unlock" onClick={() => api('unlock', {}).catch(e => setLog?.(l => [...l, 'ERR ' + e]))}>$X<small>{t('unlock')}</small></button>
+      <button title="$H — homing cycle" onClick={() => api('home', {}).catch(e => setLog?.(l => [...l, 'ERR ' + e]))}>$H<small>{t('home')}</small></button>
     </div>
     <div className="row runrow">
       <button className="pri" disabled={runOff} title={runTitle} onClick={run}>{t('plot')}</button>

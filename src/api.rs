@@ -85,8 +85,10 @@ pub fn handle(g: &Arc<Grbl>, method: &str, path: &str, body: Value) -> Result<Va
         ("POST", "connect") => { let b: Connect = serde_json::from_value(body).map_err(|e| e.to_string())?; g.connect(&b.port, b.baud)?; Ok(json!({"ok": true})) }
         ("POST", "disconnect") => { g.disconnect(); Ok(json!({"ok": true})) }
         ("POST", "send") => { let b: Line = serde_json::from_value(body).map_err(|e| e.to_string())?; g.send(&b.line); Ok(json!({"ok": true})) }
-        ("POST", "unlock") => { g.send_now("$X"); Ok(json!({"ok": true})) }
-        ("POST", "home") => { g.send_now("$H"); Ok(json!({"ok": true})) }
+        // Safety actions: accept ANY method. A transport-level slip (GET vs POST) must never
+        // silently kill the unlock button again — 0.5.9 shipped exactly that bug.
+        (_, "unlock") => { g.send_now("$X"); Ok(json!({"ok": true})) }
+        (_, "home") => { g.send_now("$H"); Ok(json!({"ok": true})) }
         ("POST", "stream") => { let b: Stream = serde_json::from_value(body).map_err(|e| e.to_string())?; g.stream(&b.gcode); Ok(json!({"ok": true})) }
         ("POST", "hold") => { g.hold(); Ok(json!({"ok": true})) }
         ("POST", "resume") => { g.resume(); Ok(json!({"ok": true})) }
@@ -129,6 +131,18 @@ mod tests {
         assert_eq!(v["connected"], json!(false));
         assert!(handle(&g, "GET", "nope", json!({})).unwrap_err().contains("Unknown"));
         assert!(handle(&g, "POST", "connect", json!({"port": ""})).is_err(), "empty port fails cleanly");
+    }
+
+    #[test]
+    fn safety_routes_accept_any_method() {
+        // 0.5.9 regression: the UI once sent GET /unlock, the route only matched POST and the
+        // request died with "Unknown request" — the safety button silently did nothing.
+        let (g, _rx) = Grbl::new();
+        assert!(handle(&g, "GET", "unlock", json!({})).is_ok(), "GET unlock must route");
+        assert!(handle(&g, "POST", "unlock", json!({})).is_ok());
+        assert!(handle(&g, "GET", "home", json!({})).is_ok());
+        assert!(handle(&g, "POST", "home", json!({})).is_ok());
+        assert!(handle(&g, "DELETE", "unlock", json!({})).is_ok(), "any method must route");
     }
 
     #[test]
