@@ -204,6 +204,19 @@ fn selftest(g: Arc<Grbl>, proxy: EventLoopProxy<String>) {
     }
     r.insert("feedov".into(), json!(feedov));
 
+    // WCS round-trip: select G55 -> the $G modal report must reflect it
+    let mut wcs = false;
+    if conn {
+        let _ = call(&g, "POST", "send", json!({"line": "G55"}));
+        let _ = call(&g, "POST", "send", json!({"line": "$G"}));
+        let t0 = std::time::Instant::now();
+        while t0.elapsed() < Duration::from_secs(3) {
+            if g.status().wcs == "G55" { wcs = true; break; }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    r.insert("wcs".into(), json!(wcs));
+
     let _ = proxy.send_event(format!("SELFTEST {}", Value::Object(r)));
     // watchdog: if the page never reports, finish anyway
     std::thread::sleep(Duration::from_secs(15));

@@ -11,7 +11,7 @@ import PenPanel, { DEFAULT_PEN } from './components/PenPanel.jsx';
 
 export default function App() {
   const [lang, setLang] = useState(detectLang());
-  const [status, setStatus] = useState({ state: '—', wpos: [0, 0, 0], progress: 0, connected: false, ov: 100 });
+  const [status, setStatus] = useState({ state: '—', wpos: [0, 0, 0], progress: 0, connected: false, ov: 100, wcs: 'G54' });
   const [log, setLog] = useState([]);
   const [values, setValues] = useState({});
   const [stopped, setStopped] = useState(false);

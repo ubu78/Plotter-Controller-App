@@ -39,6 +39,18 @@ DESK
 cat > "$A/plotter-controller.svg" <<'SVG'
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><rect width="128" height="128" rx="22" fill="#1f6feb"/><path d="M24 96 L56 40 L72 68 L104 28" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="104" cy="28" r="8" fill="#fff"/></svg>
 SVG
+# appimagetool requires a real raster icon: render the same artwork as PNG + .DirIcon
+python3 - "$A" <<'PYEOF'
+import sys
+from PIL import Image, ImageDraw
+img = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
+d = ImageDraw.Draw(img)
+d.rounded_rectangle([4, 4, 252, 252], radius=44, fill=(31, 111, 235, 255))
+d.line([(48, 192), (112, 80), (144, 136), (208, 56)], fill=(255, 255, 255, 255), width=16, joint="curve")
+d.ellipse([192, 40, 224, 72], fill=(255, 255, 255, 255))
+img.save(sys.argv[1] + "/plotter-controller.png")
+PYEOF
+ln -sf plotter-controller.png "$A/.DirIcon"
 
 echo "==> 4/4 appimagetool"
 TOOL="$B/appimagetool"

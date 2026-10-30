@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::{thread, time::Duration};
 
 #[derive(Serialize, Clone)]
-pub struct Status { pub connected: bool, pub state: String, pub wpos: [f64; 3], pub wco: [f64; 3], pub progress: f64, pub ov: f64 }
+pub struct Status { pub connected: bool, pub state: String, pub wpos: [f64; 3], pub wco: [f64; 3], pub progress: f64, pub ov: f64, pub wcs: String }
 
 /// Event channel: status / log / settings as JSON strings, one consumer (the UI pump in main.rs).
 pub struct Bus { tx: Sender<String> }
@@ -28,7 +28,7 @@ fn triple(v: &str) -> [f64; 3] { let mut o = [0.0; 3]; for (i, s) in v.split(','
 impl Grbl {
     pub fn new() -> (Arc<Self>, Receiver<String>) {
         let (tx, rx) = mpsc::channel();
-        let st = Status { connected: false, state: "Disconnected".into(), wpos: [0.0; 3], wco: [0.0; 3], progress: 0.0, ov: 100.0 };
+        let st = Status { connected: false, state: "Disconnected".into(), wpos: [0.0; 3], wco: [0.0; 3], progress: 0.0, ov: 100.0, wcs: "G54".into() };
         (Arc::new(Grbl { inner: Mutex::new(Inner { port: None, queue: VecDeque::new(), busy: false, streaming: false, total: 0, sent: 0, st, settings: BTreeMap::new(), gen: 0 }), bus: Bus { tx } }), rx)
     }
     fn log(&self, l: String) { self.bus.send(json!({"type": "log", "line": l}).to_string()); }
@@ -63,6 +63,7 @@ impl Grbl {
             if i.gen != g { break; }
             match i.port.as_mut() { Some(p) => { let _ = p.write_all(b"?"); } None => break }
         });
+        self.send("$G"); // read modal state: the [GC:...] reply syncs the active WCS (G54..G59)
         Ok(())
     }
     fn reset_state(i: &mut Inner) { i.queue.clear(); i.busy = false; i.streaming = false; i.total = 0; i.sent = 0; i.st.progress = 0.0; }
@@ -89,6 +90,13 @@ impl Grbl {
             }
             i.st.progress = if i.total > 0 { i.sent as f64 / i.total as f64 } else { 0.0 };
             self.emit(&i); return;
+        }
+        if let Some(rest) = l.strip_prefix("[GC:") { // modal state report (reply to $G): sync the active WCS
+            for tok in rest.trim_end_matches(']').split(' ') {
+                if let Some(n) = tok.strip_prefix('G') {
+                    if let Ok(num) = n.parse::<u32>() { if (54..=59).contains(&num) { i.st.wcs = format!("G{num}"); self.emit(&i); } }
+                }
+            }
         }
         if let Some((k, v)) = l.split_once('=') {
             if k.starts_with('$') && k[1..].chars().all(|c| c.is_ascii_digit()) {
