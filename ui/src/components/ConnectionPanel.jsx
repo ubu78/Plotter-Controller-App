@@ -19,13 +19,13 @@ export default function ConnectionPanel({ t, status, send, gcode, setLog }) {
       <i /><b>{msg}</b>{status.connected && s && !connecting && <small>{s}</small>}
       {mode === 'err' && <span className="csfix">{t('sterrfix')}</span>}
     </div>
-    <label><span>{t('port')}</span><select value={port} onChange={e => setPort(e.target.value)}>{ports.map(p => <option key={p.path} value={p.path}>{p.path} {p.name}</option>)}</select><button onClick={refresh}>↻</button></label>
+    <label><span>{t('port')}</span><select value={port} onChange={e => setPort(e.target.value)}>{ports.map(p => <option key={p.path} value={p.path}>{p.name ? `${p.name} · ${p.path}` : p.path}</option>)}</select><button onClick={refresh}>↻</button></label>
     <label><span>{t('baud')}</span><input type="number" value={baud} onChange={e => setBaud(+e.target.value)} /></label>
     <div className="row"><button className="pri" onClick={() => api('connect', { port, baud })}>{t('connect')}</button>
       <button onClick={() => api('disconnect', {})}>{t('disconnect')}</button></div>
     <div className="safety">
-      <button title="$X — GRBL unlock" onClick={() => send('$X')}>$X<small>{t('unlock')}</small></button>
-      <button title="$H — homing cycle" onClick={() => send('$H')}>$H<small>{t('home')}</small></button>
+      <button title="$X — GRBL unlock" onClick={() => api('unlock')}>$X<small>{t('unlock')}</small></button>
+      <button title="$H — homing cycle" onClick={() => api('home')}>$H<small>{t('home')}</small></button>
     </div>
     <div className="row runrow">
       <button className="pri" disabled={runOff} title={runTitle} onClick={run}>{t('plot')}</button>

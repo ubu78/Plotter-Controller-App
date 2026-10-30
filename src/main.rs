@@ -262,6 +262,30 @@ fn selftest(g: Arc<Grbl>, proxy: EventLoopProxy<String>) {
     }
     r.insert("wcs".into(), json!(wcs));
 
+    // Unlock round-trip: raise an alarm on the mock board (a real GRBL leaves the in-flight
+    // line unanswered, wedging the queue). $X must go straight to the wire and the board
+    // must return to Idle — this is the regression test for the "unlock button stopped working".
+    let mut unlock = false;
+    if conn {
+        let _ = call(&g, "POST", "send", json!({"line": "$ALARM"}));
+        let t0 = std::time::Instant::now();
+        let mut alarm_seen = false;
+        while t0.elapsed() < Duration::from_secs(3) {
+            if g.status().state == "Alarm" { alarm_seen = true; break; }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if alarm_seen {
+            let _ = call(&g, "POST", "send", json!({"line": "G0 X1 Y1"})); // locked board: never answered
+            let _ = call(&g, "POST", "unlock", json!({}));
+            let t0 = std::time::Instant::now();
+            while t0.elapsed() < Duration::from_secs(3) {
+                if g.status().state == "Idle" { unlock = true; break; }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+    r.insert("unlock".into(), json!(unlock));
+
     let _ = proxy.send_event(format!("SELFTEST {}", Value::Object(r)));
     // watchdog: if the page never reports, finish anyway
     std::thread::sleep(Duration::from_secs(15));

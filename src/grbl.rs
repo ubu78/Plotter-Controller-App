@@ -78,6 +78,14 @@ impl Grbl {
     fn line(&self, l: String) {
         if l.is_empty() { return; }
         let mut i = self.inner.lock().unwrap();
+        // Board rebooted (welcome banner) or raised an alarm: whatever was in flight is lost and
+        // never answered. Drop the queue and the busy flag, otherwise $X/$H from the UI would
+        // sit trapped behind dead lines forever ("unlock button stopped working").
+        if l.starts_with("Grbl ") || l.starts_with("ALARM:") {
+            Self::reset_state(&mut i);
+            self.log(format!("-- {l} — queue cleared --"));
+            if l.starts_with("ALARM:") { self.log("-- press $X to unlock --".into()); }
+        }
         if l.starts_with('<') {
             let f: Vec<&str> = l.trim_matches(|c| c == '<' || c == '>').split('|').collect();
             i.st.state = f[0].split(':').next().unwrap_or("").to_string();
@@ -115,6 +123,15 @@ impl Grbl {
         }
     }
     pub fn send(&self, line: &str) { let mut i = self.inner.lock().unwrap(); i.queue.push_back(line.to_string()); i.total += 1; self.next(&mut i); }
+    /// System commands ($X unlock, $H homing) must never wait behind a stuck queue:
+    /// write them to the wire immediately, even if another line is still unanswered.
+    pub fn send_now(&self, line: &str) {
+        let mut i = self.inner.lock().unwrap();
+        if i.port.is_none() { return; }
+        i.busy = true; // the ok/error reply releases it like any normal line
+        self.log(format!("> {line}"));
+        if let Some(p) = i.port.as_mut() { let _ = p.write_all(format!("{line}\n").as_bytes()); }
+    }
     pub fn stream(&self, gcode: &str) {
         let mut i = self.inner.lock().unwrap();
         let lines: Vec<String> = gcode.lines().map(|l| l.split(';').next().unwrap_or("").trim().to_string()).filter(|l| !l.is_empty()).collect();

@@ -38,17 +38,55 @@ fn sanitize_name(name: &str) -> String {
 
 fn conv_json(c: impl serde::Serialize) -> Result<Value, String> { serde_json::to_value(c).map_err(|e| e.to_string()) }
 
+/// Friendly USB-serial name + "is Arduino" flag, from USB IDs and strings.
+/// Arduino LLC/Genuino 0x2341, Arduino.org 0x2a03; CH340/CH9102 clones (most Uno/Nano
+/// compatibles) 0x1a86:7523/55d3/55d4. CP210x (0x10c4:ea60) and FTDI (0x0403) get chip names.
+fn usb_name(vid: u16, pid: u16, man: &str, prod: &str) -> (String, bool) {
+    let (man_l, prod_l) = (man.trim().to_lowercase(), prod.trim().to_lowercase());
+    let arduino = man_l.contains("arduino") || prod_l.contains("arduino")
+        || matches!(vid, 0x2341 | 0x2a03)
+        || matches!((vid, pid), (0x1a86, 0x7523) | (0x1a86, 0x55d3) | (0x1a86, 0x55d4));
+    let mut name = prod.trim().to_string(); // vendor strings already have sane casing
+    if arduino {
+        if name.is_empty() { name = "Arduino".into(); }
+        if vid == 0x1a86 && !name.to_lowercase().contains("ch340") { name.push_str(" (CH340)"); }
+    } else if name.is_empty() {
+        name = if vid == 0x1a86 { "CH340".into() }
+            else if (vid, pid) == (0x10c4, 0xea60) { "CP210x".into() }
+            else if vid == 0x0403 { "FTDI".into() } else { String::new() };
+    }
+    (name, arduino)
+}
+
+/// Dropdown order: Arduino (0) -> other USB-serial ttyUSB*/ttyACM* (1) -> system ports like ttyS* (2).
+fn port_group(path: &str, arduino: bool) -> u8 {
+    if arduino { 0 } else if path.contains("/ttyUSB") || path.contains("/ttyACM") { 1 } else { 2 }
+}
+
 pub fn handle(g: &Arc<Grbl>, method: &str, path: &str, body: Value) -> Result<Value, String> {
     match (method, path) {
         ("GET", "status") => serde_json::to_value(g.status()).map_err(|e| e.to_string()),
-        ("GET", "ports") => Ok(json!(serialport::available_ports().unwrap_or_default().into_iter().map(|p| json!({"path": p.port_name,
-            "name": match p.port_type { serialport::SerialPortType::UsbPort(u) => u.product.unwrap_or_default(), _ => String::new() }})).collect::<Vec<_>>())),
+        ("GET", "ports") => {
+            let mut ps: Vec<(u8, String, Value)> = serialport::available_ports().unwrap_or_default().into_iter().map(|p| {
+                let path = p.port_name.clone();
+                let (name, ard) = match &p.port_type {
+                    serialport::SerialPortType::UsbPort(u) => usb_name(u.vid, u.pid, u.manufacturer.as_deref().unwrap_or(""), u.product.as_deref().unwrap_or("")),
+                    _ => (String::new(), false),
+                };
+                let g = port_group(&path, ard);
+                (g, path.clone(), json!({"path": path, "name": name}))
+            }).collect();
+            ps.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+            Ok(json!(ps.into_iter().map(|x| x.2).collect::<Vec<_>>()))
+        }
         ("GET", "fonts") => Ok(json!(text::FONTS)),
         ("GET", "settings") => Ok(json!({"values": g.settings(), "meta": {}, "preset": {"110": 3000, "111": 3000, "120": 100, "121": 100, "32": 0}})),
         ("GET", "selftest_info") => Ok(json!({"version": env!("CARGO_PKG_VERSION"), "fonts": text::FONTS.len(), "platform": std::env::consts::OS})),
         ("POST", "connect") => { let b: Connect = serde_json::from_value(body).map_err(|e| e.to_string())?; g.connect(&b.port, b.baud)?; Ok(json!({"ok": true})) }
         ("POST", "disconnect") => { g.disconnect(); Ok(json!({"ok": true})) }
         ("POST", "send") => { let b: Line = serde_json::from_value(body).map_err(|e| e.to_string())?; g.send(&b.line); Ok(json!({"ok": true})) }
+        ("POST", "unlock") => { g.send_now("$X"); Ok(json!({"ok": true})) }
+        ("POST", "home") => { g.send_now("$H"); Ok(json!({"ok": true})) }
         ("POST", "stream") => { let b: Stream = serde_json::from_value(body).map_err(|e| e.to_string())?; g.stream(&b.gcode); Ok(json!({"ok": true})) }
         ("POST", "hold") => { g.hold(); Ok(json!({"ok": true})) }
         ("POST", "resume") => { g.resume(); Ok(json!({"ok": true})) }
@@ -114,6 +152,44 @@ mod tests {
     fn b64_roundtrip() {
         assert_eq!(b64("SGVsbG8=").unwrap(), b"Hello");
         assert_eq!(b64("").unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn usb_names_and_port_order() {
+        // Arduino by VID (Uno), by product string, by CH340 clone id
+        assert_eq!(usb_name(0x2341, 0x0043, "Arduino (www.arduino.cc)", "Uno"), ("Uno".into(), true));
+        assert_eq!(usb_name(0x2a03, 0x0001, "", ""), ("Arduino".into(), true));
+        assert_eq!(usb_name(0x1a86, 0x7523, "wch.cn", ""), ("Arduino (CH340)".into(), true));
+        assert_eq!(usb_name(0x1a86, 0x7523, "wch.cn", "USB-SERIAL CH340"), ("USB-SERIAL CH340".into(), true));
+        assert_eq!(usb_name(0x10c4, 0xea60, "Silicon Labs", "CP2102"), ("CP2102".into(), false));
+        assert_eq!(usb_name(0x10c4, 0xea60, "Silicon Labs", ""), ("CP210x".into(), false));
+        assert_eq!(usb_name(0x0403, 0x6001, "FTDI", ""), ("FTDI".into(), false));
+        assert_eq!(usb_name(0x1234, 0x5678, "", ""), ("".into(), false));
+        // order: Arduino first, then ttyUSB/ttyACM, then system ports
+        assert_eq!(port_group("/dev/ttyUSB0", true), 0);
+        assert_eq!(port_group("/dev/ttyACM1", true), 0);
+        assert_eq!(port_group("/dev/ttyUSB0", false), 1);
+        assert_eq!(port_group("/dev/ttyACM0", false), 1);
+        assert_eq!(port_group("/dev/ttyS0", false), 2);
+        assert_eq!(port_group("/dev/pts/3", false), 2);
+    }
+
+    #[test]
+    fn ports_endpoint_sorted_and_shaped() {
+        let (g, _rx) = Grbl::new();
+        let v = handle(&g, "GET", "ports", json!({})).unwrap();
+        let a = v.as_array().expect("ports array");
+        println!("real ports in sandbox: {a:?}");
+        let mut prev = (0u8, String::new());
+        for p in a {
+            assert!(p["path"].is_string(), "each port has a path");
+            let g = if p["name"].as_str().unwrap_or("").contains("Arduino") { 0 }
+                else { let path = p["path"].as_str().unwrap_or("");
+                    if path.contains("/ttyUSB") || path.contains("/ttyACM") { 1 } else { 2 } };
+            let path = p["path"].as_str().unwrap_or("").to_string();
+            assert!(g > prev.0 || (g == prev.0 && path >= prev.1), "ports must be sorted: {a:?}");
+            prev = (g, path);
+        }
     }
 
     #[test]
