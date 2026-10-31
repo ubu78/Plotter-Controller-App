@@ -72,10 +72,16 @@ pub fn polys_to_conv(polys: Polys, unit: f64, o: &Opt, mut warn: Vec<String>) ->
     let down = format!("{}{}", if o.pen_mode == "z" { format!("G1 Z{} F{}", o.z_down, o.z_feed) } else { o.servo_down.clone() }, dw);
     let mut g: Vec<String> = vec!["; Plotter Controller — SVG".into()];
     if o.laser_off { g.push("$32=0".into()); }
-    g.extend(["G21 G90".to_string(), up.clone()]);
+    // Feed rate is written ONCE at the top of the file (GRBL F is modal — it stays until changed),
+    // so the drawing moves carry no F. Only the Z plunge keeps its own F (z_feed), and in that
+    // mode the drawing feed is restored right after the plunge. Arc commands (G2/G3) get no F.
+    g.extend(["G21 G90".to_string(), format!("G1 F{}", o.feed), up.clone()]);
+    let restore = format!("G1 F{}", o.feed); // z mode only: undo the plunge's modal F{z_feed}
+    let zmode = o.pen_mode == "z";
     for p in &paths {
         g.push(format!("G0 X{:.3} Y{:.3}", p[0][0], p[0][1])); g.push(down.clone());
-        for v in &p[1..] { g.push(format!("G1 X{:.3} Y{:.3} F{}", v[0], v[1], o.feed)); }
+        if zmode { g.push(restore.clone()); }
+        for v in &p[1..] { g.push(format!("G1 X{:.3} Y{:.3}", v[0], v[1])); }
         g.push(up.clone());
     }
     g.push("G0 X0 Y0".into());
@@ -120,6 +126,37 @@ mod tests {
         let o = Opt { pen_mode: "z".into(), ..Default::default() };
         let c = polys_to_conv(vec![vec![[0.0, 0.0], [10.0, 0.0], [10.0, 5.0]]], 1.0, &o, vec![]);
         assert!(c.gcode.contains("G0 Z5") && c.gcode.contains("G1 Z0 F500"));
+    }
+
+    #[test]
+    fn feed_is_written_once_at_the_top() {
+        // 0.5.11 rule: the feed lives in a single `G1 F<feed>` line right after G21 G90;
+        // drawing moves carry no F, arcs (G2/G3) get none either.
+        let o = Opt::default();
+        let c = polys_to_conv(vec![vec![[0.0, 0.0], [10.0, 0.0], [10.0, 5.0], [0.0, 0.0]]], 1.0, &o, vec![]);
+        let feed_lines: Vec<&str> = c.gcode.lines().filter(|l| l.starts_with("G1 F")).collect();
+        assert_eq!(feed_lines, vec!["G1 F3000"], "exactly one feed line, per settings");
+        assert!(c.gcode.contains("G21 G90\nG1 F3000"), "feed sits right after the unit/mode setup");
+        for l in c.gcode.lines() {
+            if l.starts_with("G1 X") || l.starts_with("G2 ") || l.starts_with("G3 ") {
+                assert!(!l.contains('F'), "motion line must be F-free: {l}");
+            }
+        }
+    }
+
+    #[test]
+    fn z_mode_restores_drawing_feed_after_plunge() {
+        // F is modal: the plunge `G1 Z.. F{z_feed}` would otherwise slow every following move.
+        let o = Opt { pen_mode: "z".into(), ..Default::default() };
+        let c = polys_to_conv(vec![vec![[0.0, 0.0], [10.0, 0.0], [10.0, 5.0]]], 1.0, &o, vec![]);
+        let mut lines = c.gcode.lines();
+        let mut after_plunge = false;
+        let mut restored = false;
+        for l in lines.by_ref() {
+            if l.starts_with("G1 Z") { after_plunge = true; }
+            if after_plunge && l == "G1 F3000" { restored = true; break; }
+        }
+        assert!(restored, "drawing feed must be restored after the Z plunge");
     }
 
     #[test]

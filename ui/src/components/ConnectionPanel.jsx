@@ -33,6 +33,7 @@ export default function ConnectionPanel({ t, status, send, gcode, setLog }) {
       <button className="pri" disabled={runOff} title={runTitle} onClick={run}>{t('plot')}</button>
       <button disabled={!status.connected} title="!" onClick={() => api('hold', {})}>❚❚ {t('pause')}</button>
       <button className="res" disabled={!status.connected} title="~" onClick={() => api('resume', {})}>▶ {t('resume')}</button>
+      <button className="stop" disabled={!status.connected} title="0x18 — soft reset, clears the queue" onClick={() => api('stop', {})}>■ {t('stopprint')}</button>
     </div>
     <div className="row">
       <button disabled={!status.connected} title="F −10%" onClick={() => api('feedov', { kind: 'minus' })}>F−</button>

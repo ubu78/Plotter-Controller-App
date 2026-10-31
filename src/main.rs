@@ -39,6 +39,7 @@ const SELFTEST_INIT_JS: &str = "setTimeout(function () {
         var xb = null;
         document.querySelectorAll('button[title]').forEach(function (x) { if (!xb && x.title.indexOf('$X') >= 0) xb = x; });
         body.unlock_btn = { found: !!xb };
+        body.stop_btn = !!document.querySelector('.runrow .stop');
         if (!xb) return done();
         var cnt = function (t) { var n = 0, i = 0; while ((i = t.indexOf('> $X', i)) >= 0) { n++; i += 4; } return n; };
         var lg = document.getElementById('log');
@@ -195,6 +196,7 @@ fn main() {
                         if let Some(b) = ui.get("banner") { v["ui_banner"] = b.clone(); }
                         if let Some(d) = ui.get("gcheck") { v["ui_gcheck"] = d.clone(); }
                         if let Some(d) = ui.get("unlock_btn") { v["ui_unlock_btn"] = d.clone(); }
+                        if let Some(d) = ui.get("stop_btn") { v["ui_stop_btn"] = d.clone(); }
                         if let Some(d) = ui.get("dbg") { v["ipc_dbg"] = d.clone(); }
                         if let Some(e) = ui.get("exc") { v["ui_exc"] = e.clone(); }
                         println!("SELFTEST {v}");
@@ -295,6 +297,29 @@ fn selftest(g: Arc<Grbl>, proxy: EventLoopProxy<String>) {
         }
     }
     r.insert("feedov".into(), json!(feedov));
+
+    // Stop print round-trip: stream a short program (the mock drains it, progress freezes at 100%),
+    // then POST stop -> 0x18 -> the board reboots, the welcome banner clears queue and counters.
+    // progress back to 0 while staying connected proves the whole reset path actually ran.
+    let mut stop = false;
+    if conn {
+        let _ = call(&g, "POST", "stream", json!({"gcode": "G0 X1 Y1\nG0 X2 Y2\nG0 X3 Y3"}));
+        let t0 = std::time::Instant::now();
+        let mut progressed = false;
+        while t0.elapsed() < Duration::from_secs(3) {
+            if g.status().progress > 0.0 { progressed = true; break; }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let _ = call(&g, "POST", "stop", json!({}));
+        let t0 = std::time::Instant::now();
+        while t0.elapsed() < Duration::from_secs(3) {
+            let s = g.status();
+            if s.connected && s.state == "Idle" && s.progress == 0.0 { stop = true; break; }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        stop = stop && progressed;
+    }
+    r.insert("stop".into(), json!(stop));
 
     // WCS round-trip: select G55 -> the $G modal report must reflect it
     let mut wcs = false;

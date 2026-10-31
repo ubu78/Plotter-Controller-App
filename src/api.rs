@@ -82,6 +82,7 @@ pub fn handle(g: &Arc<Grbl>, method: &str, path: &str, body: Value) -> Result<Va
         ("GET", "fonts") => Ok(json!(text::FONTS)),
         ("GET", "settings") => Ok(json!({"values": g.settings(), "meta": {}, "preset": {"110": 3000, "111": 3000, "120": 100, "121": 100, "32": 0}})),
         ("GET", "selftest_info") => Ok(json!({"version": env!("CARGO_PKG_VERSION"), "fonts": text::FONTS.len(), "platform": std::env::consts::OS})),
+        ("GET", "version") => Ok(json!({"version": env!("CARGO_PKG_VERSION")})),
         ("POST", "connect") => { let b: Connect = serde_json::from_value(body).map_err(|e| e.to_string())?; g.connect(&b.port, b.baud)?; Ok(json!({"ok": true})) }
         ("POST", "disconnect") => { g.disconnect(); Ok(json!({"ok": true})) }
         ("POST", "send") => { let b: Line = serde_json::from_value(body).map_err(|e| e.to_string())?; g.send(&b.line); Ok(json!({"ok": true})) }
