@@ -32,6 +32,13 @@ export default function PenPanel({ t, pen, setPen, send }) {
               onClick={() => send(pen.servoDown)}>▼ {sval(pen.servoDown) === null ? t('pendown') : t('tdn').replace('{n}', sval(pen.servoDown))}</button>
             <button title={`${t('tup')} → ${pen.servoUp}`} onClick={() => send(pen.servoUp)}>▲ {t('tup')}</button>
           </div>
+          {/* Pen schemes as one-click presets — no degree hunting. №1 mirrors the alternative
+              program's G-code exactly (up = M5 with no angle at all, down = M3 S30); the second
+              is the inverted scheme (up = M3 S45, down = M5 rest). */}
+          <div className="row testrow">
+            <button title={t('preset1t')} onClick={() => setPen({ ...pen, servoUp: 'M5', servoDown: 'M3 S30' })}>№1: ↑ M5 · ↓ M3 S30</button>
+            <button title={t('preset2t')} onClick={() => setPen({ ...pen, servoUp: 'M3 S45', servoDown: 'M5' })}>↑ M3 S45 · ↓ M5</button>
+          </div>
           <div className="hint">{t('svnote')}</div></>
       : <label><span style={{ minWidth: 150 }}>{t('zud')}</span>{num('zUp')}{num('zDown')}</label>}
     <label><span style={{ minWidth: 150 }}>{t('dwell')}</span>{num('dwell')}</label>
