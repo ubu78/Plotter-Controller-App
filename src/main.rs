@@ -24,6 +24,8 @@ const INDEX: &str = "plotter://app/index.html";
 const INIT_JS: &str = "window.__pushq = window.__pushq || []; window.__push = function (m) { window.__pushq.push(m); };";
 // Self-test: report DOM diagnostics back through the normal IPC channel (callbacks are unreliable here).
 // Includes a G-code editor round-trip: click Edit, type via a native value setter, click Done, verify the preview.
+// Includes a ready-G-code paste round-trip: fill the paste block via a native value setter, click Apply,
+// verify the G-code panel received the program (0.5.13).
 // Includes an unlock-button round-trip through the REAL transport: click the actual $X button,
 // then count '> $X' lines in the console log. 0.5.9 shipped a GET/POST route mismatch that made
 // the button silently do nothing while the Rust-side POST selftest stayed green — this UI half
@@ -52,6 +54,30 @@ const SELFTEST_INIT_JS: &str = "setTimeout(function () {
         }, 400);
       } catch (e3) { body.unlock_btn = { exc: String(e3) }; done(); }
     };
+    var px = function (done) { // ready-G-code block: fill the paste field, click Apply, verify the G-code panel
+      try {
+        var pta = document.getElementById('pasteta');
+        body.paste = { ta: !!pta };
+        if (!pta) return done();
+        var psec = pta.closest('section');
+        var pab = null;
+        if (psec) psec.querySelectorAll('button').forEach(function (x) { if (!pab && /apply|применить|rakenda/i.test(x.textContent)) pab = x; });
+        body.paste.apply_btn = !!pab;
+        if (!pab) return done();
+        var pd = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
+        pd.set.call(pta, 'G21\\nG90\\nG1 X7 Y7 F1500\\nM5');
+        pta.dispatchEvent(new Event('input', { bubbles: true }));
+        body.paste.filled = pta.value.indexOf('G1 X7 Y7') >= 0;
+        setTimeout(function () {
+          pab.click();
+          setTimeout(function () {
+            var pp = document.getElementById('gcode');
+            body.paste.applied = pp ? pp.textContent.indexOf('G1 X7 Y7 F1500') >= 0 : false;
+            done();
+          }, 150);
+        }, 100);
+      } catch (e4) { body.paste = { exc: String(e4) }; done(); }
+    };
     try {
       var gc = {};
       gc.load_input = !!document.querySelector('input[accept*=gcode]');
@@ -66,7 +92,7 @@ const SELFTEST_INIT_JS: &str = "setTimeout(function () {
         setTimeout(function () {
           var ta = sec.querySelector('textarea.gcodeedit');
           gc.textarea = !!ta;
-          if (!ta) return ux(function () { rep(body); });
+          if (!ta) return px(function () { ux(function () { rep(body); }); });
           var d = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
           d.set.call(ta, 'G21\\nG90\\nG0 X10 Y10\\nG1 X50 Y30 F3000\\nG1 X10 Y10\\nM5');
           ta.dispatchEvent(new Event('input', { bubbles: true }));
@@ -76,14 +102,14 @@ const SELFTEST_INIT_JS: &str = "setTimeout(function () {
             setTimeout(function () {
               var p2 = document.getElementById('gcode');
               gc.pre_after = p2 ? p2.textContent.indexOf('G0 X10') >= 0 : false;
-              ux(function () { rep(body); });
+              px(function () { ux(function () { rep(body); }); });
             }, 150);
           }, 150);
         }, 150);
         return;
       }
     } catch (e2) { body.gcheck = { exc: String(e2) }; }
-    ux(function () { rep(body); });
+    px(function () { ux(function () { rep(body); }); });
   } catch (e) { rep({ exc: String(e) }); }
 }, 6000);";
 
@@ -195,6 +221,7 @@ fn main() {
                         v["ui_selects"] = ui.get("sel").cloned().unwrap_or(json!(null));
                         if let Some(b) = ui.get("banner") { v["ui_banner"] = b.clone(); }
                         if let Some(d) = ui.get("gcheck") { v["ui_gcheck"] = d.clone(); }
+                        if let Some(d) = ui.get("paste") { v["ui_paste"] = d.clone(); }
                         if let Some(d) = ui.get("unlock_btn") { v["ui_unlock_btn"] = d.clone(); }
                         if let Some(d) = ui.get("stop_btn") { v["ui_stop_btn"] = d.clone(); }
                         if let Some(d) = ui.get("dbg") { v["ipc_dbg"] = d.clone(); }
