@@ -20,7 +20,11 @@ const STYLE_ICONS = {
 };
 const STYLES = [['pen', 'fmpen'], ['single', 'fmsingle'], ['fill', 'fmfill'], ['hatch', 'fmhatch']];
 export default function SourcePanel({ t, pen, status, setLog, onConv }) {
-  const [o, setO] = useState({ paper: 'A4', margin: 0, scale: 100, center: false, feed: 3000, landscape: false, laserOff: true });
+  // Conversion options persist in localStorage: the machine's Y direction does not change
+  // between sessions, so «Invert Y» must not reset on restart either.
+  const [o, setO] = useState(() => { const d = { paper: 'A4', margin: 0, scale: 100, center: false, feed: 3000, landscape: false, laserOff: true, invertY: false };
+    try { return { ...d, ...JSON.parse(localStorage.svgopts || '{}') }; } catch (e) { return d; } });
+  useEffect(() => { try { localStorage.svgopts = JSON.stringify(o); } catch (e) { /* storage blocked */ } }, [o]);
   const [tx, setTx] = useState({ text: '', font: 'Roboto', size: 6, lineHeight: 1.4, markdown: false, fillMode: 'pen', fillSpacing: 0, hatchAngle: 45, startX: 0, startY: 0 });
   const [fonts, setFonts] = useState([]); const [svg, setSvg] = useState('');
   const [mode, setMode] = useState('svg'); const [off, setOff] = useState([0, 0]); const [page, setPage] = useState(0); const [conv, setConv] = useState(null); const [pick, setPick] = useState(false); const [pdf, setPdf] = useState(''); const [pdfDraw, setPdfDraw] = useState(true);
@@ -43,6 +47,8 @@ export default function SourcePanel({ t, pen, status, setLog, onConv }) {
       <label><span>{t('feed')}</span>{num('feed', o.feed)}</label>
       <label><span>{t('land')}</span><input type="checkbox" checked={o.landscape} onChange={e => set('landscape', e.target.checked)} /></label>
       <label><span>{t('laser')}</span><input type="checkbox" checked={o.laserOff} onChange={e => set('laserOff', e.target.checked)} /></label>
+      <label title={t('invyhint')}><span>{t('invy')}</span><input type="checkbox" checked={o.invertY} onChange={e => set('invertY', e.target.checked)} /></label>
+      <div className="hint">{t('invyhint')}</div>
       <div className="row"><button className="pri" onClick={() => run()}>{t('convert')}</button>
         <button onClick={() => { if (!conv?.gcode) return setLog(l => [...l, t('noconv')]);
           api('savefile', { name: 'drawing.gcode', content: conv.gcode }).then(r => setLog(l => [...l, '→ ' + (r?.path || '')]), e => setLog(l => [...l, 'ERR ' + e])); }}>{t('save')}</button></div>

@@ -100,6 +100,50 @@ const SELFTEST_INIT_JS: &str = "setTimeout(function () {
         }, 100);
       } catch (e4) { body.paste = { exc: String(e4) }; done(); }
     };
+    var iy = function (done) { // 0.5.15 invert-Y round-trip: load an SVG, convert with the
+    // mirror OFF, then ON. Idempotent: the checkbox is first forced to a known state, because
+    // localStorage may restore invertY=true from a previous run (that exact state once made
+    // the first conversion already mirrored and the test flapped).
+      try {
+        var fi = document.querySelector('input[accept*=svg]');
+        body.invy = { input: !!fi };
+        if (!fi || typeof DataTransfer !== 'function' || typeof File !== 'function') { body.invy.skip = 'no-input'; return done(); }
+        var sec2 = fi.closest('section');
+        var cb = null, cv = null;
+        if (sec2) {
+          sec2.querySelectorAll('label').forEach(function (l) { var c = l.querySelector('input[type=checkbox]'); if (c && /инвертир|invert|peegeld/i.test(l.textContent)) cb = c; });
+          sec2.querySelectorAll('button').forEach(function (x) { if (!cv && /конверт|convert|konverteeri/i.test(x.textContent)) cv = x; });
+        }
+        body.invy.checkbox = !!cb; body.invy.conv_btn = !!cv;
+        if (!cb || !cv) return done();
+        var dt = new DataTransfer();
+        dt.items.add(new File([\"<svg xmlns='http://www.w3.org/2000/svg' width='40mm' viewBox='0 0 40 20'><path d='M5 5 L35 15'/></svg>\"], 'st.svg', { type: 'image/svg+xml' }));
+        fi.files = dt.files;
+        fi.dispatchEvent(new Event('change', { bubbles: true }));
+        var snap = function () { return (document.getElementById('gcode') || {}).textContent || ''; };
+        setTimeout(function () { // the picked SVG auto-converts in whatever state was restored
+          body.invy.pre = cb.checked ? 'on' : 'off';
+          if (cb.checked) cb.click(); // force the known OFF state
+          setTimeout(function () {
+            cv.click(); // convert with the mirror OFF -> baseline diagonal (0,0)->(30,10)
+            setTimeout(function () {
+              var g1 = snap();
+              body.invy.base = g1.indexOf('G1 X0.000 Y0.000') >= 0 && g1.indexOf('G1 X30.000 Y10.000') >= 0 && g1.indexOf('G1 X0.000 Y10.000') < 0;
+              cb.click(); // mirror ON
+              setTimeout(function () {
+                cv.click();
+                setTimeout(function () {
+                  var g2 = snap();
+                  body.invy.mirrored = g2.indexOf('G1 X0.000 Y10.000') >= 0 && g2.indexOf('G1 X30.000 Y0.000') >= 0 && g2.indexOf('G1 X30.000 Y10.000') < 0;
+                  body.invy.checked = !!cb.checked;
+                  done();
+                }, 450);
+              }, 150);
+            }, 450);
+          }, 150);
+        }, 500);
+      } catch (e6) { body.invy = { exc: String(e6) }; done(); }
+    };
     try {
       var gc = {};
       gc.load_input = !!document.querySelector('input[accept*=gcode]');
@@ -114,7 +158,7 @@ const SELFTEST_INIT_JS: &str = "setTimeout(function () {
         setTimeout(function () {
           var ta = sec.querySelector('textarea.gcodeedit');
           gc.textarea = !!ta;
-          if (!ta) return px(function () { ux(function () { rep(body); }); });
+          if (!ta) return px(function () { iy(function () { ux(function () { rep(body); }); }); });
           var d = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
           d.set.call(ta, 'G21\\nG90\\nG0 X10 Y10\\nG1 X50 Y30 F3000\\nG1 X10 Y10\\nM5');
           ta.dispatchEvent(new Event('input', { bubbles: true }));
@@ -124,14 +168,14 @@ const SELFTEST_INIT_JS: &str = "setTimeout(function () {
             setTimeout(function () {
               var p2 = document.getElementById('gcode');
               gc.pre_after = p2 ? p2.textContent.indexOf('G0 X10') >= 0 : false;
-              px(function () { ux(function () { rep(body); }); });
+              px(function () { iy(function () { ux(function () { rep(body); }); }); });
             }, 150);
           }, 150);
         }, 150);
         return;
       }
     } catch (e2) { body.gcheck = { exc: String(e2) }; }
-    px(function () { ux(function () { rep(body); }); });
+    px(function () { iy(function () { ux(function () { rep(body); }); }); });
   } catch (e) { rep({ exc: String(e) }); }
 }, 6000);";
 
@@ -244,6 +288,7 @@ fn main() {
                         if let Some(b) = ui.get("banner") { v["ui_banner"] = b.clone(); }
                         if let Some(d) = ui.get("gcheck") { v["ui_gcheck"] = d.clone(); }
                         if let Some(d) = ui.get("paste") { v["ui_paste"] = d.clone(); }
+                        if let Some(d) = ui.get("invy") { v["ui_invy"] = d.clone(); }
                         if let Some(d) = ui.get("unlock_btn") { v["ui_unlock_btn"] = d.clone(); }
                         if let Some(d) = ui.get("stop_btn") { v["ui_stop_btn"] = d.clone(); }
                         if let Some(d) = ui.get("dbg") { v["ipc_dbg"] = d.clone(); }
@@ -283,6 +328,14 @@ fn selftest(g: Arc<Grbl>, proxy: EventLoopProxy<String>) {
 
     let text_r = call(&g, "POST", "text", json!({"text": "Привет, selftest", "options": {"size": 6}}));
     r.insert("text".into(), json!(text_r.as_ref().map(|v| !v["gcode"].as_str().unwrap_or("").is_empty()).unwrap_or(false)));
+
+    // 0.5.15: invert-Y mirror — the same diagonal with invertY must travel to the mirrored
+    // corner and draw to the flipped end, with the footprint unchanged
+    let inv = call(&g, "POST", "svg", json!({"svg": "<svg xmlns='http://www.w3.org/2000/svg' width='40mm' viewBox='0 0 40 20'><path d='M5 5 L35 15'/></svg>", "options": {"invertY": true}}));
+    r.insert("invy".into(), json!(inv.as_ref().map(|v| {
+        let s = v["gcode"].as_str().unwrap_or("");
+        s.contains("G1 X0.000 Y10.000") && s.contains("G1 X30.000 Y0.000") && !s.contains("G1 X30.000 Y10.000")
+    }).unwrap_or(false)));
 
     let servo = text_r.as_ref().map(|v| { let s = v["gcode"].as_str().unwrap_or("");
         s.contains("M5") && s.contains("M3 S255") && s.contains("G4 P") && s.contains("$32=0") }).unwrap_or(false);

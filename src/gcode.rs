@@ -13,6 +13,8 @@ pub struct Opt {
     pub paper: String, pub paper_w: f64, pub paper_h: f64, pub margin: f64, pub scale: f64, pub center: bool,
     pub offset_x: f64, pub offset_y: f64, pub feed: f64, pub pen_mode: String, pub z_up: f64, pub z_down: f64,
     pub z_feed: f64, pub servo_down: String, pub servo_up: String, pub landscape: bool, pub laser_off: bool, pub dwell: f64,
+    /// 0.5.15: mirror the drawing vertically (for machines whose Y+ travels "up the page")
+    pub invert_y: bool,
     // text
     pub font: String, pub size: f64, pub line_height: f64, pub markdown: bool, pub fill_mode: String,
     /// Infill step for fill/hatch styles, mm; 0 = automatic from the font size
@@ -26,7 +28,7 @@ impl Default for Opt {
     fn default() -> Self {
         Opt { paper: "A4".into(), paper_w: 0.0, paper_h: 0.0, margin: 0.0, scale: 100.0, center: false, offset_x: 0.0, offset_y: 0.0,
             feed: 3000.0, pen_mode: "servo".into(), z_up: 5.0, z_down: 0.0, z_feed: 500.0, servo_down: "M3 S255".into(), servo_up: "M5".into(),
-            landscape: false, laser_off: true, dwell: 0.15, font: "Roboto".into(), size: 6.0, line_height: 1.4, markdown: false,
+            landscape: false, laser_off: true, dwell: 0.15, invert_y: false, font: "Roboto".into(), size: 6.0, line_height: 1.4, markdown: false,
             fill_mode: "pen".into(), fill_spacing: 0.0, hatch_angle: 45.0, start_x: 0.0, start_y: 0.0, page: None, keep_origin: false }
     }
 }
@@ -152,6 +154,26 @@ pub fn segs_to_conv(segs: SegPolys, unit: f64, o: &Opt, mut warn: Vec<String>) -
         Seg::L(v) => Seg::L(tf(v)),
         Seg::A { s, e, c, cw } => Seg::A { s: tf(s), e: tf(e), c: tf(c), cw },
     }).collect()).collect();
+    // 0.5.15: optional vertical mirror for machines whose Y+ travels "up the page" (the usual
+    // CNC direction: origin at the start corner, Y away from the operator). The sheet space
+    // here is Y-down from the top-left corner (SVG convention); a Y-up machine turns that
+    // into a vertical mirror on paper. The flip runs around the drawing's own bbox, so the
+    // plotted footprint does not move — only the orientation flips. Mirroring reverses
+    // orientation, so every arc swaps G2 <-> G3; I/J are derived from the mirrored points
+    // and stay exact.
+    let paths: SegPolys = if o.invert_y {
+        let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+        for path in &paths {
+            for seg in path {
+                for p in seg_bbox_pts(seg) { b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]; }
+            }
+        }
+        let my = if b[1].is_finite() { b[1] + b[3] } else { 0.0 }; // 2 × mid-Y
+        paths.into_iter().map(|p| p.into_iter().map(|seg| match seg {
+            Seg::L(v) => Seg::L([v[0], my - v[1]]),
+            Seg::A { s, e, c, cw } => Seg::A { s: [s[0], my - s[1]], e: [e[0], my - e[1]], c: [c[0], my - c[1]], cw: !cw },
+        }).collect()).collect()
+    } else { paths };
     // display polylines (preview): arcs are sampled every ~15 degrees
     let disp: Polys = paths.iter().map(|p| {
         let mut out: Vec<[f64; 2]> = vec![];
@@ -327,6 +349,38 @@ mod tests {
         let segs: SegPolys = vec![vec![Seg::A { s: [0.0, 0.0], e: [10.0, -10.0], c: [10.0, 0.0], cw: true }]];
         let c = segs_to_conv(segs, 1.0, &o, vec![]);
         assert!(c.gcode.contains("G2 X10.000 Y0.000 I10.000 J0.000"), "{}", c.gcode);
+    }
+
+    #[test]
+    fn invert_y_mirrors_the_drawing_in_place() {
+        // 0.5.15: the sheet transform normalizes the drawing to the margin corner, then the
+        // mirror flips it around its own bbox mid-Y: a diagonal laid as (0,0)->(30,10) must
+        // travel to (0,10) and end at (30,0); the footprint stays identical
+        let o = Opt::default();
+        let base = polys_to_conv(vec![vec![[5.0, 5.0], [35.0, 15.0]]], 1.0, &o, vec![]);
+        let mir = polys_to_conv(vec![vec![[5.0, 5.0], [35.0, 15.0]]], 1.0, &Opt { invert_y: true, ..Default::default() }, vec![]);
+        assert!(base.gcode.contains("G1 X0.000 Y0.000") && base.gcode.contains("G1 X30.000 Y10.000"), "baseline diagonal: {}", base.gcode);
+        assert!(mir.gcode.contains("G1 X0.000 Y10.000"), "travel flips to the mirrored end: {}", mir.gcode);
+        assert!(mir.gcode.contains("G1 X30.000 Y0.000"), "line end flips too: {}", mir.gcode);
+        assert!(!mir.gcode.contains("G1 X30.000 Y10.000"), "no unmirrored motion left: {}", mir.gcode);
+        let (b1, b2) = (base.bbox.unwrap(), mir.bbox.unwrap());
+        assert!((b1[1] - b2[1]).abs() < 0.01 && (b1[3] - b2[3]).abs() < 0.01, "footprint unchanged: {b1:?} vs {b2:?}");
+    }
+
+    #[test]
+    fn invert_y_swaps_arc_direction() {
+        // the 270° CCW arc from arcs_emit_g2_g3_with_ij must come out as a G2 with the
+        // mirrored endpoint; I/J are recomputed from the mirrored center and stay radius-exact
+        let o = Opt::default();
+        let segs: SegPolys = vec![vec![Seg::A { s: [0.0, 0.0], e: [10.0, 10.0], c: [10.0, 0.0], cw: false }]];
+        let base = segs_to_conv(segs, 1.0, &o, vec![]);
+        assert!(base.gcode.contains("G3 X10.000 Y20.000"), "baseline is G3: {}", base.gcode);
+        let segs: SegPolys = vec![vec![Seg::A { s: [0.0, 0.0], e: [10.0, 10.0], c: [10.0, 0.0], cw: false }]];
+        let mir = segs_to_conv(segs, 1.0, &Opt { invert_y: true, ..Default::default() }, vec![]);
+        assert!(mir.gcode.contains("G2 X10.000 Y0.000 I10.000 J0.000"), "mirrored arc is G2 with mirrored I/J: {}", mir.gcode);
+        assert!(!mir.gcode.contains("G3 "), "no G3 left: {}", mir.gcode);
+        let (b1, b2) = (base.bbox.unwrap(), mir.bbox.unwrap());
+        assert!((b1[1] - b2[1]).abs() < 0.01 && (b1[3] - b2[3]).abs() < 0.01, "arc footprint unchanged: {b1:?} vs {b2:?}");
     }
 
     #[test]
