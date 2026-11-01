@@ -19,7 +19,7 @@ const STYLE_ICONS = {
     <path d={RING} fillRule="evenodd" fill="url(#pv-hatch)" stroke="currentColor" strokeWidth="0.8" /></svg>,
 };
 const STYLES = [['pen', 'fmpen'], ['single', 'fmsingle'], ['fill', 'fmfill'], ['hatch', 'fmhatch']];
-export default function SourcePanel({ t, pen, status, setLog, onConv, onGcode }) {
+export default function SourcePanel({ t, pen, status, setLog, onConv }) {
   const [o, setO] = useState({ paper: 'A4', margin: 0, scale: 100, center: false, feed: 3000, landscape: false, laserOff: true });
   const [tx, setTx] = useState({ text: '', font: 'Roboto', size: 6, lineHeight: 1.4, markdown: false, fillMode: 'pen', fillSpacing: 0, hatchAngle: 45, startX: 0, startY: 0 });
   const [fonts, setFonts] = useState([]); const [svg, setSvg] = useState('');
@@ -37,9 +37,6 @@ export default function SourcePanel({ t, pen, status, setLog, onConv, onGcode })
   return (<>
     <section><h2>{t('svg')}</h2>
       <input type="file" accept=".svg,image/svg+xml" onChange={async e => { const s = await e.target.files[0].text(); setSvg(s); setMode('svg'); setOff([0, 0]); run('svg', [0, 0], 0, s); }} />
-      <label><span>{t('loadg')}</span><input type="file" accept=".gcode,.ngc,.nc,.tap,.txt" onChange={async e => { const f = e.target.files[0]; if (!f) return;
-        const s = await f.text(); onGcode && onGcode(s); e.target.value = '';
-        setLog(l => [...l, `${t('gloaded')}: ${f.name} · ${s.split('\n').length} ${t('glines')}`]); }} /></label>
       <label><span>{t('paper')}</span><select value={o.paper} onChange={e => set('paper', e.target.value)}><option>A4</option><option>A5</option><option>Letter</option></select></label>
       <label><span>{t('margin')}</span>{num('margin', o.margin)} mm</label><label><span>{t('scale')}</span>{num('scale', o.scale)} %</label>
       <label><span>{t('center')}</span><input type="checkbox" checked={o.center} onChange={e => set('center', e.target.checked)} /></label>

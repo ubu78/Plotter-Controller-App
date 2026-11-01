@@ -52,7 +52,7 @@ export default function App() {
       <ConnectionPanel t={t} status={status} send={send} gcode={gcode} setLog={setLog} />
       <ManualPanel t={t} send={send} pen={pen} status={status} />
       <PenPanel t={t} pen={pen} setPen={setPen} send={send} />
-      <SourcePanel t={t} pen={pen} status={status} setLog={setLog} onConv={r => setGcode(r.gcode || '')} onGcode={setGcode} />
+      <SourcePanel t={t} pen={pen} status={status} setLog={setLog} onConv={r => setGcode(r.gcode || '')} />
       <PastePanel t={t} setGcode={setGcode} setLog={setLog} />
       <SettingsPanel t={t} lang={lang} values={values} send={send} />
       <GcodePanel t={t} gcode={gcode} setGcode={setGcode} setLog={setLog} />

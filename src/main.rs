@@ -54,7 +54,7 @@ const SELFTEST_INIT_JS: &str = "setTimeout(function () {
         }, 400);
       } catch (e3) { body.unlock_btn = { exc: String(e3) }; done(); }
     };
-    var px = function (done) { // ready-G-code block: fill the paste field, click Apply, verify the G-code panel
+    var px = function (done) { // ready-G-code block: fill the paste field, click Apply, verify the G-code panel, then open a file
       try {
         var pta = document.getElementById('pasteta');
         body.paste = { ta: !!pta };
@@ -63,6 +63,7 @@ const SELFTEST_INIT_JS: &str = "setTimeout(function () {
         var pab = null;
         if (psec) psec.querySelectorAll('button').forEach(function (x) { if (!pab && /apply|применить|rakenda/i.test(x.textContent)) pab = x; });
         body.paste.apply_btn = !!pab;
+        body.paste.file_input = !!(psec && psec.querySelector('input[type=file]'));
         if (!pab) return done();
         var pd = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
         pd.set.call(pta, 'G21\\nG90\\nG1 X7 Y7 F1500\\nM5');
@@ -73,6 +74,27 @@ const SELFTEST_INIT_JS: &str = "setTimeout(function () {
           setTimeout(function () {
             var pp = document.getElementById('gcode');
             body.paste.applied = pp ? pp.textContent.indexOf('G1 X7 Y7 F1500') >= 0 : false;
+            // file path: synthesize a File into the picker (DataTransfer), fire change -> content must
+            // land in the paste field AND in the G-code panel in one step
+            try {
+              var pf = psec ? psec.querySelector('input[type=file]') : null;
+              if (pf && typeof DataTransfer === 'function' && typeof File === 'function') {
+                var dt = new DataTransfer();
+                dt.items.add(new File(['G21\\nG90\\nG1 X3 Y3 F1200\\nM5'], 'selftest.gcode', { type: 'text/plain' }));
+                pf.files = dt.files;
+                pf.dispatchEvent(new Event('change', { bubbles: true }));
+                body.paste.file_pick = 'dispatched';
+                setTimeout(function () {
+                  var pp2 = document.getElementById('gcode');
+                  body.paste.file_applied = pp2 ? pp2.textContent.indexOf('G1 X3 Y3 F1200') >= 0 : false;
+                  var pt2 = document.getElementById('pasteta');
+                  body.paste.file_in_field = pt2 ? pt2.value.indexOf('G1 X3 Y3') >= 0 : false;
+                  done();
+                }, 250);
+                return;
+              }
+              body.paste.file_pick = 'skip';
+            } catch (e5) { body.paste.file_pick = 'exc:' + String(e5); }
             done();
           }, 150);
         }, 100);
