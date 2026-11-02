@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import Preview from './Preview.jsx';
 const b64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 32768) s += String.fromCharCode.apply(null, u8.subarray(i, i + 32768)); return btoa(s); };
@@ -19,23 +19,45 @@ const STYLE_ICONS = {
     <path d={RING} fillRule="evenodd" fill="url(#pv-hatch)" stroke="currentColor" strokeWidth="0.8" /></svg>,
 };
 const STYLES = [['pen', 'fmpen'], ['single', 'fmsingle'], ['fill', 'fmfill'], ['hatch', 'fmhatch']];
+const GOOGLE_STYLES = ['regular', 'bold', 'italic', 'bolditalic']; // resolved on the Rust side (download or cached variant)
 export default function SourcePanel({ t, pen, status, setLog, onConv }) {
   // Conversion options persist in localStorage: the machine's Y direction does not change
   // between sessions, so «Invert Y» must not reset on restart either.
   const [o, setO] = useState(() => { const d = { paper: 'A4', margin: 0, scale: 100, center: false, feed: 3000, landscape: false, laserOff: true, invertY: false };
     try { return { ...d, ...JSON.parse(localStorage.svgopts || '{}') }; } catch (e) { return d; } });
   useEffect(() => { try { localStorage.svgopts = JSON.stringify(o); } catch (e) { /* storage blocked */ } }, [o]);
-  const [tx, setTx] = useState({ text: '', font: 'Roboto', size: 6, lineHeight: 1.4, markdown: false, fillMode: 'pen', fillSpacing: 0, hatchAngle: 45, startX: 0, startY: 0 });
+  const [tx, setTx] = useState({ text: '', font: 'Roboto', fontStyle: 'regular', size: 6, lineHeight: 1.4, markdown: false, fillMode: 'pen', fillSpacing: 0, hatchAngle: 45, startX: 0, startY: 0 });
   const [fonts, setFonts] = useState({ google: [], system: [] }); const [svg, setSvg] = useState('');
+  const [fp, setFp] = useState(null); const fpSeq = useRef(0);
   const [mode, setMode] = useState('svg'); const [off, setOff] = useState([0, 0]); const [page, setPage] = useState(0); const [conv, setConv] = useState(null); const [pick, setPick] = useState(false); const [pdf, setPdf] = useState(''); const [pdfDraw, setPdfDraw] = useState(true);
   const set = (k, v) => setO(p => ({ ...p, [k]: v })); const st = (k, v) => setTx(p => ({ ...p, [k]: v }));
+  const SNAME = { regular: t('streg'), bold: t('stbold'), italic: t('stital'), bolditalic: t('stbi') };
+  const fam = fonts.system.find(f => f.value === tx.font); // selected family is a system font?
   // Google fonts + every family installed on the system; ↻ rescans after installing new fonts
   const loadFonts = () => api('fonts').then(f => setFonts(Array.isArray(f) ? { google: f, system: [] } : { google: f.google || [], system: f.system || [] }));
   useEffect(() => { loadFonts(); }, []);
+  // The font value sent to the converter: a system style maps to the exact face file from
+  // the scan (sys:<path>), a Google style becomes 'Family:variant' and is resolved on the
+  // Rust side (downloaded once, cached next to the regular face, Regular on 400 fallback).
+  const fontVal = txo => {
+    const stl = txo.fontStyle || 'regular';
+    if (stl === 'regular') return txo.font;
+    const fam = fonts.system.find(f => f.value === txo.font);
+    const s = fam && (fam.styles || []).find(s => s.key === stl);
+    return s ? s.value : txo.font + ':' + stl;
+  };
+  // Live preview: the real glyph contours of the sample text (or of the typed text),
+  // rendered from the same outlines the plotter draws. Debounced, stale replies dropped.
+  useEffect(() => {
+    const id = ++fpSeq.current;
+    const tm = setTimeout(() => api('fontpreview', { font: fontVal(tx), text: (tx.text.trim() || 'Aa Яя 123').slice(0, 12) })
+      .then(r => { if (fpSeq.current === id) setFp(r && r.paths ? r : null); }).catch(() => {}), 250);
+    return () => clearTimeout(tm);
+  }, [tx.font, tx.fontStyle, tx.text, fonts.system]);
   const run = async (m = mode, of = off, pg = page, source = svg, txo = tx, pdfData = pdf) => {
     if (m === 'svg' && !source) return;
     const options = { ...o, ...pen, offsetX: of[0], offsetY: of[1], page: pg };
-    const r = m === 'pdf' ? await api('pdf', { data: pdfData, options: { ...options, startX: 0, startY: 0 } }) : m === 'text' ? await api('text', { text: txo.text, options: { ...options, ...txo, text: undefined } }) : await api('svg', { svg: source, options });
+    const r = m === 'pdf' ? await api('pdf', { data: pdfData, options: { ...options, startX: 0, startY: 0 } }) : m === 'text' ? await api('text', { text: txo.text, options: { ...options, ...txo, text: undefined, font: fontVal(txo) } }) : await api('svg', { svg: source, options });
     if (r.error) return setLog(l => [...l, 'ERR ' + r.error]);
     setConv(r); onConv?.(r); setPage(r.page || 0);
   };
@@ -63,10 +85,20 @@ export default function SourcePanel({ t, pen, status, setLog, onConv }) {
         setTx(p => ({ ...p, text: r.text, markdown: /\.md$/i.test(f.name) })); }} /></label>
       <label><span>{t('pdfdraw')}</span><input type="checkbox" checked={pdfDraw} onChange={e => setPdfDraw(e.target.checked)} /></label>
       <textarea rows={6} style={{ width: '100%' }} value={tx.text} placeholder="Привет, мир! Tere, õäöü" onChange={e => st('text', e.target.value)} />
-      <label><span>{t('font')}</span><select value={tx.font} onChange={e => st('font', e.target.value)}>
+      <label><span>{t('font')}</span><select value={tx.font} onChange={e => { const nf = e.target.value; const nfam = fonts.system.find(f => f.value === nf);
+        const keys = nfam ? (nfam.styles || []).map(s => s.key) : GOOGLE_STYLES;
+        if (!keys.includes(tx.fontStyle || 'regular')) st('fontStyle', 'regular'); // new family may lack the current style
+        st('font', nf); }}>
         <optgroup label={t('fontgoogle')}>{fonts.google.map(f => <option key={f}>{f}</option>)}</optgroup>
         {fonts.system.length > 0 && <optgroup label={t('fontsys')}>{fonts.system.map(f => <option key={f.value} value={f.value}>{f.family}</option>)}</optgroup>}
       </select><button title={t('frefresh')} onClick={e => { e.preventDefault(); loadFonts(); }}>↻</button></label>
+      <label><span>{t('fstyle')}</span><select value={tx.fontStyle || 'regular'} onChange={e => st('fontStyle', e.target.value)}>
+        {(fam ? (fam.styles || []).map(s => [s.key, s.name]) : GOOGLE_STYLES.map(k => [k, k]))
+          .map(([k, n]) => <option key={k} value={k}>{SNAME[k] || n || k}</option>)}
+      </select></label>
+      {fp && <div className="fprev"><svg viewBox={`0 0 ${fp.w} ${fp.h}`} preserveAspectRatio="xMinYMid meet" style={{ width: '100%', height: 44, display: 'block' }}>
+        {fp.paths.map((p, i) => <path key={i} d={'M' + p.map(v => v[0].toFixed(2) + ' ' + v[1].toFixed(2)).join('L')} fill="none" stroke="currentColor" strokeWidth="0.18" strokeLinejoin="round" />)}
+      </svg></div>}
       <label><span>{t('fsize')}</span>{num('size', tx.size, st)}</label><label><span>{t('lh')}</span>{num('lineHeight', tx.lineHeight, st)}</label>
       <label><span>{t('speed')}</span>{num('feed', o.feed)} мм/мин</label>
       <div className="stylerow" role="radiogroup" aria-label={t('style')}>

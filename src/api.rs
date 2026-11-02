@@ -13,6 +13,7 @@ fn baud() -> u32 { 115200 }
 #[derive(Deserialize)] struct Line { line: String }
 #[derive(Deserialize)] struct Stream { gcode: String }
 #[derive(Deserialize)] struct Conv { #[serde(default)] svg: String, #[serde(default)] text: String, #[serde(default)] options: Opt }
+#[derive(Deserialize)] struct FontPrev { #[serde(default)] font: String, #[serde(default)] text: String }
 #[derive(Deserialize)] struct PdfReq { data: String, #[serde(default)] options: Value }
 #[derive(Deserialize)] struct DocFile { name: String, data: String }
 #[derive(Deserialize)] struct SaveFile { name: String, content: String }
@@ -80,10 +81,10 @@ pub fn handle(g: &Arc<Grbl>, method: &str, path: &str, body: Value) -> Result<Va
             Ok(json!(ps.into_iter().map(|x| x.2).collect::<Vec<_>>()))
         }
         // Two groups for the font dropdown: Google fonts (downloaded on first use) and
-        // every family installed on the system — value is `sys:<path>`, read from disk.
+        // every family installed on the system — with an exact face per available style.
         ("GET", "fonts") => Ok(json!({
             "google": text::FONTS,
-            "system": text::system_fonts().into_iter().map(|(family, value)| json!({"family": family, "value": value})).collect::<Vec<_>>()
+            "system": text::system_fonts()
         })),
         ("GET", "settings") => Ok(json!({"values": g.settings(), "meta": {}, "preset": {"110": 3000, "111": 3000, "120": 100, "121": 100, "32": 0}})),
         ("GET", "selftest_info") => Ok(json!({"version": env!("CARGO_PKG_VERSION"), "fonts": text::FONTS.len(), "platform": std::env::consts::OS})),
@@ -103,6 +104,13 @@ pub fn handle(g: &Arc<Grbl>, method: &str, path: &str, body: Value) -> Result<Va
         ("POST", "jogcancel") => { g.jog_cancel(); Ok(json!({"ok": true})) }
         ("POST", "svg") => { let b: Conv = serde_json::from_value(body).map_err(|e| e.to_string())?; svg::svg_to_conv(&b.svg, &b.options).and_then(conv_json) }
         ("POST", "text") => { let b: Conv = serde_json::from_value(body).map_err(|e| e.to_string())?; text::text_to_conv(&b.text, &b.options).and_then(conv_json) }
+        // live font preview: glyph contours of a sample text for the dropdown preview line
+        ("POST", "fontpreview") => {
+            let b: FontPrev = serde_json::from_value(body).map_err(|e| e.to_string())?;
+            let font = if b.font.is_empty() { "Roboto".to_string() } else { b.font };
+            let text = if b.text.trim().is_empty() { "Aa Яя 123".to_string() } else { b.text };
+            text::font_preview(&font, &text).and_then(conv_json)
+        }
         ("POST", "doc") => {
             let b: DocFile = serde_json::from_value(body).map_err(|e| e.to_string())?;
             let d = b64(&b.data)?; doc::doc_to_text(&b.name, &d).map(|t| json!({"text": t}))
@@ -237,10 +245,19 @@ mod fonts_test {
         let sys = v["system"].as_array().expect("system font array");
         assert!(!sys.is_empty(), "the sandbox has system fonts");
         assert!(sys.iter().all(|f| f["value"].as_str().map_or(false, |s| s.starts_with("sys:"))), "every entry carries a sys: value");
-        // a listed system font must actually convert
-        let val = sys.iter().find(|f| f["family"].as_str() == Some("DejaVu Sans"))
-            .map(|f| f["value"].clone()).unwrap_or(json!(sys[0]["value"].clone()));
-        let r = handle(&g, "POST", "text", json!({"text": "Тест шрифта", "options": {"font": val, "size": 6}})).unwrap();
-        assert!(!r["gcode"].as_str().unwrap_or("").is_empty(), "a system font must convert: {r}");
+        assert!(sys.iter().all(|f| f["styles"].as_array().map_or(false, |a| !a.is_empty())), "every family lists its styles");
+        // DejaVu Sans: regular + bold faces, and the bold face really draws differently
+        let dj = sys.iter().find(|f| f["family"] == json!("DejaVu Sans")).expect("DejaVu Sans in the list").clone();
+        let reg = dj["value"].as_str().unwrap().to_string();
+        let bold = dj["styles"].as_array().unwrap().iter().find(|s| s["key"] == json!("bold"))
+            .map(|s| s["value"].as_str().unwrap().to_string());
+        let bold = bold.expect("DejaVu Sans must expose a bold face");
+        let g1 = handle(&g, "POST", "text", json!({"text": "ШШ", "options": {"font": reg, "size": 10}})).unwrap();
+        let g2 = handle(&g, "POST", "text", json!({"text": "ШШ", "options": {"font": bold, "size": 10}})).unwrap();
+        assert_ne!(g1["gcode"], g2["gcode"], "the bold face must draw differently");
+        // preview route returns the contours of the requested text
+        let p = handle(&g, "POST", "fontpreview", json!({"font": reg, "text": "Шрифт"})).unwrap();
+        assert!(!p["paths"].as_array().expect("paths array").is_empty(), "preview returns contours: {p}");
+        assert!(p["w"].as_f64().unwrap() > 5.0);
     }
 }

@@ -178,8 +178,33 @@ const SELFTEST_INIT_JS: &str = "setTimeout(function () {
         setTimeout(function () {
           btn.click();
           setTimeout(function () {
-            var g = (document.getElementById('gcode') || {}).textContent || '';
-            body.sysfont.converted = /G1 X[\\d.]+ Y[\\d.]+/.test(g);
+            var g1 = (document.getElementById('gcode') || {}).textContent || '';
+            body.sysfont.converted = /G1 X[\\d.]+ Y[\\d.]+/.test(g1);
+            // 0.5.17: the style select (Regular/Bold/...) switches the exact face file and
+            // must change the plotted output; the preview line must show real contours
+            var ss = null, bo = null;
+            document.querySelectorAll('select').forEach(function (s) {
+              if (ss) return;
+              var b = null;
+              s.querySelectorAll('option').forEach(function (o) { if (!b && /^(Bold|Жирный|Rasvane)$/.test(o.textContent)) b = o; });
+              if (b) { ss = s; bo = b; }
+            });
+            body.sysfont.style_select = !!ss;
+            body.sysfont.preview = !!document.querySelector('.fprev path');
+            if (ss && bo) {
+              var sd2 = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value');
+              sd2.set.call(ss, bo.value);
+              ss.dispatchEvent(new Event('change', { bubbles: true }));
+              setTimeout(function () {
+                btn.click();
+                setTimeout(function () {
+                  var g2 = (document.getElementById('gcode') || {}).textContent || '';
+                  body.sysfont.bold_diff = g2.length !== g1.length && /G1 X[\\d.]+ Y[\\d.]+/.test(g2);
+                  done();
+                }, 1200);
+              }, 250);
+              return;
+            }
             done();
           }, 1200);
         }, 200);
@@ -379,6 +404,23 @@ fn selftest(g: Arc<Grbl>, proxy: EventLoopProxy<String>) {
             .map(|r| !r["gcode"].as_str().unwrap_or("").is_empty()).ok()
     }).unwrap_or(false);
     r.insert("sysfonts".into(), json!(sysfonts));
+
+    // 0.5.17: style variants + preview — DejaVu Sans must expose Bold (and it must draw
+    // differently), fontpreview must return the contours of the requested text
+    let (fstyle, fontprev) = (|| -> Option<(bool, bool)> {
+        let v = call(&g, "GET", "fonts", json!({})).ok()?;
+        let dj = v["system"].as_array()?.iter().find(|f| f["family"] == json!("DejaVu Sans"))?.clone();
+        let reg = dj["value"].as_str()?.to_string();
+        let bold = dj["styles"].as_array()?.iter().find(|s| s["key"] == json!("bold"))?["value"].as_str()?.to_string();
+        let g1 = call(&g, "POST", "text", json!({"text": "ШШ", "options": {"font": reg.clone(), "size": 10}})).ok()?;
+        let g2 = call(&g, "POST", "text", json!({"text": "ШШ", "options": {"font": bold, "size": 10}})).ok()?;
+        let styled = !g1["gcode"].as_str()?.is_empty() && g1["gcode"] != g2["gcode"];
+        let prev = call(&g, "POST", "fontpreview", json!({"font": reg, "text": "Шрифт"})).ok()
+            .map(|p| !p["paths"].as_array().map_or(true, |a| a.is_empty())).unwrap_or(false);
+        Some((styled, prev))
+    })().unwrap_or((false, false));
+    r.insert("fstyle".into(), json!(fstyle));
+    r.insert("fontpreview".into(), json!(fontprev));
 
     // 0.5.15: invert-Y mirror — the same diagonal with invertY must travel to the mirrored
     // corner and draw to the flipped end, with the footprint unchanged

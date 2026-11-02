@@ -11,6 +11,24 @@ use ttf_parser::OutlineBuilder;
 pub const FONTS: [&str; 14] = ["Roboto", "Open Sans", "PT Sans", "PT Serif", "Noto Serif", "Lora", "Playfair Display", "Ubuntu", "Comfortaa", "Caveat", "Marck Script", "Neucha", "Philosopher", "Underdog"];
 const TEST: &str = "äöõüÄÖÕÜжЖя"; // Estonian + Cyrillic coverage probe
 
+/// One available style of a system family: canonical key (regular/bold/italic/bolditalic),
+/// display name and the `sys:`-value of the exact face file that provides it.
+#[derive(serde::Serialize)]
+pub struct SysStyle { pub key: &'static str, pub name: &'static str, pub value: String }
+
+/// A system font family: `value` is the Regular face (or the only one present), `styles`
+/// lists every distinct style found for this family in canonical order.
+#[derive(serde::Serialize)]
+pub struct SysFont { pub family: String, pub value: String, pub styles: Vec<SysStyle> }
+
+const STYLE_KEYS: [(&str, &str, u16); 4] = [("regular", "Regular", 400), ("bold", "Bold", 700), ("italic", "Italic", 400), ("bolditalic", "Bold Italic", 700)];
+
+/// Canonical style of a face from the OS/2 table: bold flag + italic/oblique.
+fn style_key(f: &ttf_parser::Face) -> &'static str {
+    let it = matches!(f.style(), ttf_parser::Style::Italic | ttf_parser::Style::Oblique);
+    match (f.is_bold(), it) { (true, true) => "bolditalic", (true, false) => "bold", (false, true) => "italic", _ => "regular" }
+}
+
 fn score(data: &[u8]) -> i32 { ttf_parser::Face::parse(data, 0).map(|f| TEST.chars().filter(|&c| f.glyph_index(c).is_some()).count() as i32).unwrap_or(-1) }
 
 fn get(url: &str) -> Result<Vec<u8>, String> {
@@ -18,10 +36,11 @@ fn get(url: &str) -> Result<Vec<u8>, String> {
     let mut v = vec![]; r.into_reader().take(20_000_000).read_to_end(&mut v).map_err(|e| e.to_string())?; Ok(v)
 }
 
-fn download(name: &str, file: &PathBuf) -> Result<(), String> {
+fn download(name: &str, variant: &str, file: &PathBuf) -> Result<(), String> {
     let q: String = name.replace(' ', "+");
+    let spec = if variant.is_empty() { String::new() } else { format!(":{variant}") }; // legacy CSS API style token
     // no browser User-Agent -> Google returns full TTF (not woff2 subsets)
-    let css = String::from_utf8_lossy(&get(&format!("https://fonts.googleapis.com/css?family={q}&subset=cyrillic,latin"))?).to_string();
+    let css = String::from_utf8_lossy(&get(&format!("https://fonts.googleapis.com/css?family={q}{spec}&subset=cyrillic,latin"))?).to_string();
     let urls: Vec<String> = css.split("url(").skip(1).filter_map(|s| s.split(')').next()).filter(|u| u.starts_with("https:")).map(String::from).collect();
     if urls.is_empty() { return Err(format!("Font not found: {name}")); }
     let (mut best, mut bs) = (vec![], -2);
@@ -30,6 +49,8 @@ fn download(name: &str, file: &PathBuf) -> Result<(), String> {
 }
 
 /// (font bytes, face index inside the file) — the index matters only for .ttc collections.
+/// Accepts three forms: `sys:<path>[#n]` (system face, exact file), `Family:variant`
+/// (Google font with bold/italic/bolditalic) and plain `Family` (Google regular).
 fn load_font(name: &str, warn: &mut Vec<String>) -> Result<(Vec<u8>, u32), String> {
     // A system font: the value was produced by system_fonts(), read the file as-is.
     if let Some(p) = name.strip_prefix("sys:") {
@@ -37,12 +58,22 @@ fn load_font(name: &str, warn: &mut Vec<String>) -> Result<(Vec<u8>, u32), Strin
         let data = fs::read(file).map_err(|e| format!("Font file not available: {file} ({e})"))?;
         return Ok((data, idx));
     }
+    let (base, variant) = match name.rsplit_once(':') {
+        Some((b, v)) if matches!(v, "bold" | "italic" | "bolditalic") => (b, v),
+        _ => (name, ""),
+    };
     let dir = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".cache/plotter-controller/fonts");
-    let file = dir.join(format!("{}.ttf", name.replace(|c: char| !c.is_alphanumeric(), "_")));
-    let r = if file.exists() { Ok(()) } else { download(name, &file) };
+    let file = dir.join(format!("{}{}.ttf", base.replace(|c: char| !c.is_alphanumeric(), "_"), if variant.is_empty() { String::new() } else { format!("_{variant}") }));
+    let r = if file.exists() { Ok(()) } else { download(base, variant, &file) };
     match r.and_then(|_| fs::read(&file).map_err(|e| e.to_string())) {
         Ok(d) => Ok((d, 0)),
         Err(e) => {
+            // Google answers HTTP 400 for a variant the family simply does not have:
+            // fall back to the Regular of the SAME family before reaching for DejaVu
+            if !variant.is_empty() {
+                warn.push(format!("Font \"{base}\" has no {variant} style; using Regular"));
+                return load_font(base, warn);
+            }
             for p in ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf"] {
                 if let Ok(d) = fs::read(p) { warn.push(format!("Font \"{name}\" unavailable ({e}); using DejaVu Sans")); return Ok((d, 0)); }
             }
@@ -60,13 +91,15 @@ fn family_name(face: &ttf_parser::Face) -> Option<String> {
         .map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
-fn walk_fonts(dir: &std::path::Path, depth: u8, out: &mut Vec<(String, String)>, seen: &mut Vec<String>) {
+type FamMap = std::collections::HashMap<String, (String, std::collections::HashMap<&'static str, (i32, String)>)>;
+
+fn walk_fonts(dir: &std::path::Path, depth: u8, fams: &mut FamMap) {
     if depth > 6 { return; }
     let mut items: Vec<_> = match fs::read_dir(dir) { Ok(rd) => rd.filter_map(|e| e.ok()).collect(), Err(_) => return };
-    items.sort_by_key(|a| a.file_name()); // deterministic: the first file of a family wins
+    items.sort_by_key(|a| a.file_name()); // deterministic: ties are won by the first file seen
     for it in items {
         let p = it.path();
-        if it.file_type().map(|t| t.is_dir()).unwrap_or(false) { walk_fonts(&p, depth + 1, out, seen); continue; } // symlinks never recurse — no loops
+        if it.file_type().map(|t| t.is_dir()).unwrap_or(false) { walk_fonts(&p, depth + 1, fams); continue; } // symlinks never recurse — no loops
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
         if !matches!(ext.as_str(), "ttf" | "otf" | "ttc") { continue; }
         let Ok(data) = fs::read(&p) else { continue };
@@ -77,10 +110,14 @@ fn walk_fonts(dir: &std::path::Path, depth: u8, out: &mut Vec<(String, String)>,
         for i in faces {
             if let Ok(f) = ttf_parser::Face::parse(&data, i) {
                 if let Some(fam) = family_name(&f) {
-                    if !seen.iter().any(|s| s.eq_ignore_ascii_case(&fam)) {
-                        seen.push(fam.clone());
-                        out.push((fam, if ext == "ttc" { format!("sys:{ps}#{i}") } else { format!("sys:{ps}") }));
-                    }
+                    let key = style_key(&f);
+                    // among faces of the same canonical style keep the one whose weight is
+                    // closest to the target (Thin/Black etc. never shadow Regular/Bold)
+                    let target = STYLE_KEYS.iter().find(|k| k.0 == key).map(|k| k.2).unwrap_or(400) as i32;
+                    let dist = (f.weight().to_number() as i32 - target).abs();
+                    let value = if ext == "ttc" { format!("sys:{ps}#{i}") } else { format!("sys:{ps}") };
+                    let e = fams.entry(fam.to_lowercase()).or_insert_with(|| (fam.clone(), std::collections::HashMap::new()));
+                    match e.1.get(key) { Some(&(d, _)) if d <= dist => {} _ => { e.1.insert(key, (dist, value)); } }
                 }
             }
         }
@@ -88,18 +125,52 @@ fn walk_fonts(dir: &std::path::Path, depth: u8, out: &mut Vec<(String, String)>,
 }
 
 /// Every font family installed on the system: the standard font directories are walked
-/// recursively (user first, then system-wide), each .ttf/.otf/.ttc face is parsed and its
-/// family name read from the name table. Returns (family, `sys:`-value) sorted by name.
-pub fn system_fonts() -> Vec<(String, String)> {
+/// recursively (user first, then system-wide), each .ttf/.otf/.ttc face is parsed and
+/// classified (regular/bold/italic/bolditalic from OS/2). `value` is the Regular face;
+/// `styles` carries an exact `sys:`-value per available style, sorted by family name.
+pub fn system_fonts() -> Vec<SysFont> {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    let mut out: Vec<(String, String)> = vec![];
-    let mut seen: Vec<String> = vec![];
+    let mut fams: FamMap = std::collections::HashMap::new();
     for d in [format!("{home}/.fonts"), format!("{home}/.local/share/fonts"), "/usr/local/share/fonts".into(), "/usr/share/fonts".into()] {
         let p = PathBuf::from(&d);
-        if p.is_dir() { walk_fonts(&p, 0, &mut out, &mut seen); }
+        if p.is_dir() { walk_fonts(&p, 0, &mut fams); }
     }
-    out.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    let mut out: Vec<SysFont> = fams.into_iter().map(|(_, (family, sm))| {
+        let styles: Vec<SysStyle> = STYLE_KEYS.iter().filter_map(|(k, n, _)|
+            sm.get(k).map(|(_, v)| SysStyle { key: k, name: n, value: v.clone() })).collect();
+        let value = styles.iter().find(|s| s.key == "regular").map(|s| s.value.clone())
+            .or_else(|| styles.first().map(|s| s.value.clone())).unwrap_or_default();
+        SysFont { family, value, styles }
+    }).filter(|f| !f.styles.is_empty()).collect();
+    out.sort_by(|a, b| a.family.to_lowercase().cmp(&b.family.to_lowercase()));
     out
+}
+
+/// Live font preview: the given text drawn as glyph contours (the same outlines the
+/// fill/hatch styles plot) in mm, Y down, baseline at 8 mm. Returns polylines + the
+/// bbox for the SVG viewBox.
+pub fn font_preview(font: &str, text: &str) -> Result<serde_json::Value, String> {
+    let mut warn = vec![];
+    let (data, idx) = load_font(font, &mut warn)?;
+    let face = ttf_parser::Face::parse(&data, idx).map_err(|e| e.to_string())?;
+    let upm = face.units_per_em() as f64;
+    let (sz, base) = (10.0_f64, 8.0_f64);
+    let mut polys: Polys = vec![]; let mut x = 0.0_f64;
+    for ch in text.chars().take(12) {
+        if let Some(g) = face.glyph_index(ch) {
+            let mut ob = Outline::new(x, base, sz / upm);
+            face.outline_glyph(g, &mut ob); ob.close();
+            polys.extend(ob.polys);
+            x += face.glyph_hor_advance(g).unwrap_or(0) as f64 / upm * sz;
+        }
+    }
+    let b = bbox(&polys);
+    Ok(serde_json::json!({
+        "paths": polys,
+        "w": if b[2].is_finite() { b[2].max(1.0) } else { 1.0 },
+        "h": if b[3].is_finite() { b[3].max(1.0) } else { 1.0 },
+        "warn": warn
+    }))
 }
 
 fn strip_md(t: &str) -> String {
@@ -277,17 +348,49 @@ mod tests {
     fn system_fonts_found_sorted_and_usable() {
         let sys = system_fonts();
         assert!(!sys.is_empty(), "the sandbox has system fonts");
-        assert!(sys.iter().all(|(_, v)| v.starts_with("sys:")), "values carry the sys: prefix");
-        assert!(sys.windows(2).all(|w| w[0].0.to_lowercase() <= w[1].0.to_lowercase()), "sorted case-insensitively");
-        let fams: Vec<String> = sys.iter().map(|(f, _)| f.to_lowercase()).collect();
+        assert!(sys.iter().all(|f| f.value.starts_with("sys:")), "values carry the sys: prefix");
+        assert!(sys.iter().all(|f| !f.styles.is_empty()), "every family has at least one style");
+        assert!(sys.windows(2).all(|w| w[0].family.to_lowercase() <= w[1].family.to_lowercase()), "sorted case-insensitively");
+        let fams: Vec<String> = sys.iter().map(|f| f.family.to_lowercase()).collect();
         assert!(fams.contains(&"dejavu sans".into()), "DejaVu Sans must be in the list: {fams:?}");
         let mut u = fams.clone(); u.sort(); u.dedup();
         assert_eq!(u.len(), fams.len(), "families are unique");
-        let val = sys.iter().find(|(f, _)| f.eq_ignore_ascii_case("dejavu sans")).unwrap().1.clone();
-        let o = Opt { font: val, ..Default::default() };
-        let c = text_to_conv("Привет, мир!", &o).unwrap();
-        assert!(!c.gcode.is_empty());
-        assert!(c.warnings.is_empty(), "no missing glyphs: {:?}", c.warnings);
+        let dj = sys.iter().find(|f| f.family.eq_ignore_ascii_case("dejavu sans")).unwrap();
+        let reg = dj.styles.iter().find(|s| s.key == "regular").expect("regular style");
+        assert_eq!(reg.value, dj.value, "value is the Regular face");
+        let bold = dj.styles.iter().find(|s| s.key == "bold").expect("DejaVu Sans ships a Bold face");
+        assert_ne!(reg.value, bold.value, "styles point to different face files");
+        let c1 = text_to_conv("Привет, мир!", &Opt { font: reg.value.clone(), ..Default::default() }).unwrap();
+        let c2 = text_to_conv("Привет, мир!", &Opt { font: bold.value.clone(), ..Default::default() }).unwrap();
+        assert!(!c1.gcode.is_empty() && !c2.gcode.is_empty());
+        assert_ne!(c1.gcode, c2.gcode, "Bold must draw differently from Regular");
+        assert!(c1.warnings.is_empty(), "no missing glyphs: {:?}", c1.warnings);
+    }
+
+    #[test]
+    fn google_bold_variant_uses_a_separate_cached_face() {
+        let dir = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".cache/plotter-controller/fonts");
+        fs::create_dir_all(&dir).unwrap();
+        for (src, dst) in [("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "DejaVu_Sans.ttf"), ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "DejaVu_Sans_bold.ttf")] {
+            let d = dir.join(dst);
+            if !d.exists() { fs::copy(src, d).unwrap(); }
+        }
+        let reg = text_to_conv("ШШ", &Opt { font: "DejaVu Sans".into(), size: 10.0, ..Default::default() }).unwrap();
+        let bold = text_to_conv("ШШ", &Opt { font: "DejaVu Sans:bold".into(), size: 10.0, ..Default::default() }).unwrap();
+        assert!(!bold.gcode.is_empty());
+        assert_ne!(reg.gcode, bold.gcode, "the bold variant must load a different face");
+    }
+
+    #[test]
+    fn font_preview_draws_contours() {
+        ensure_test_font();
+        let v = font_preview("DejaVu Sans", "Шрифт").unwrap();
+        let paths = v["paths"].as_array().unwrap();
+        assert!(!paths.is_empty(), "preview must contain contours");
+        assert!(v["w"].as_f64().unwrap() > 5.0 && v["h"].as_f64().unwrap() > 5.0);
+        let empty = font_preview("DejaVu Sans", "  ").unwrap();
+        assert_eq!(empty["paths"].as_array().unwrap().len(), 0, "whitespace has no contours");
+        assert!(empty["w"].as_f64().unwrap() >= 1.0, "sane bbox fallback for empty output");
     }
 
     #[test]
