@@ -1,5 +1,8 @@
 //! Text/Markdown -> G-code. Google Fonts (full TTF) with cache, word wrap, pages, 4 letter styles:
 //! pen (one continuous centre line, handwritten) / single (fast thin contour) / fill (dense solid) / hatch (diagonal).
+//! Since 0.5.16 every font installed on the system is selectable too: the family comes from the
+//! font's own name table, the value sent back to the converter is `sys:<path>` (or `sys:<path>#<n>`
+//! for a TrueType collection) and is read straight from disk — no download, no cache.
 use crate::gcode::{bbox, paper, polys_to_conv, Conv, Opt, Polys};
 use crate::skeleton::{glyph_strokes, Outline};
 use std::{fs, io::Read, path::PathBuf};
@@ -26,19 +29,77 @@ fn download(name: &str, file: &PathBuf) -> Result<(), String> {
     fs::create_dir_all(file.parent().unwrap()).map_err(|e| e.to_string())?; fs::write(file, best).map_err(|e| e.to_string())
 }
 
-fn load_font(name: &str, warn: &mut Vec<String>) -> Result<Vec<u8>, String> {
+/// (font bytes, face index inside the file) — the index matters only for .ttc collections.
+fn load_font(name: &str, warn: &mut Vec<String>) -> Result<(Vec<u8>, u32), String> {
+    // A system font: the value was produced by system_fonts(), read the file as-is.
+    if let Some(p) = name.strip_prefix("sys:") {
+        let (file, idx) = match p.rsplit_once('#') { Some((f, i)) => (f, i.parse().unwrap_or(0)), None => (p, 0) };
+        let data = fs::read(file).map_err(|e| format!("Font file not available: {file} ({e})"))?;
+        return Ok((data, idx));
+    }
     let dir = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".cache/plotter-controller/fonts");
     let file = dir.join(format!("{}.ttf", name.replace(|c: char| !c.is_alphanumeric(), "_")));
     let r = if file.exists() { Ok(()) } else { download(name, &file) };
     match r.and_then(|_| fs::read(&file).map_err(|e| e.to_string())) {
-        Ok(d) => Ok(d),
+        Ok(d) => Ok((d, 0)),
         Err(e) => {
             for p in ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf"] {
-                if let Ok(d) = fs::read(p) { warn.push(format!("Font \"{name}\" unavailable ({e}); using DejaVu Sans")); return Ok(d); }
+                if let Ok(d) = fs::read(p) { warn.push(format!("Font \"{name}\" unavailable ({e}); using DejaVu Sans")); return Ok((d, 0)); }
             }
             Err(format!("Cannot load font \"{name}\" ({e}). Internet needed for first download."))
         }
     }
+}
+
+/// Family name from the name table: typographic family (16) preferred over family (1),
+/// English (0x409) preferred over the rest; only Unicode-encoded records decode.
+fn family_name(face: &ttf_parser::Face) -> Option<String> {
+    let pick = |id: u16, lang: u16| face.names().into_iter().find(|n| n.name_id == id && n.language_id == lang).and_then(|n| n.to_string());
+    pick(16, 0x409).or_else(|| pick(1, 0x409)).or_else(|| pick(16, 0)).or_else(|| pick(1, 0))
+        .or_else(|| face.names().into_iter().find(|n| n.name_id == 16 || n.name_id == 1).and_then(|n| n.to_string()))
+        .map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+fn walk_fonts(dir: &std::path::Path, depth: u8, out: &mut Vec<(String, String)>, seen: &mut Vec<String>) {
+    if depth > 6 { return; }
+    let mut items: Vec<_> = match fs::read_dir(dir) { Ok(rd) => rd.filter_map(|e| e.ok()).collect(), Err(_) => return };
+    items.sort_by_key(|a| a.file_name()); // deterministic: the first file of a family wins
+    for it in items {
+        let p = it.path();
+        if it.file_type().map(|t| t.is_dir()).unwrap_or(false) { walk_fonts(&p, depth + 1, out, seen); continue; } // symlinks never recurse — no loops
+        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        if !matches!(ext.as_str(), "ttf" | "otf" | "ttc") { continue; }
+        let Ok(data) = fs::read(&p) else { continue };
+        let ps = p.to_string_lossy().to_string();
+        let faces: Vec<u32> = if ext == "ttc" {
+            (0..ttf_parser::fonts_in_collection(&data).unwrap_or(0)).collect()
+        } else { vec![0] };
+        for i in faces {
+            if let Ok(f) = ttf_parser::Face::parse(&data, i) {
+                if let Some(fam) = family_name(&f) {
+                    if !seen.iter().any(|s| s.eq_ignore_ascii_case(&fam)) {
+                        seen.push(fam.clone());
+                        out.push((fam, if ext == "ttc" { format!("sys:{ps}#{i}") } else { format!("sys:{ps}") }));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Every font family installed on the system: the standard font directories are walked
+/// recursively (user first, then system-wide), each .ttf/.otf/.ttc face is parsed and its
+/// family name read from the name table. Returns (family, `sys:`-value) sorted by name.
+pub fn system_fonts() -> Vec<(String, String)> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let mut out: Vec<(String, String)> = vec![];
+    let mut seen: Vec<String> = vec![];
+    for d in [format!("{home}/.fonts"), format!("{home}/.local/share/fonts"), "/usr/local/share/fonts".into(), "/usr/share/fonts".into()] {
+        let p = PathBuf::from(&d);
+        if p.is_dir() { walk_fonts(&p, 0, &mut out, &mut seen); }
+    }
+    out.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    out
 }
 
 fn strip_md(t: &str) -> String {
@@ -120,8 +181,8 @@ fn infill_step(o: &Opt, auto: f64, lo: f64, hi: f64) -> f64 {
 
 pub fn text_to_conv(text: &str, o: &Opt) -> Result<Conv, String> {
     let mut warn = vec![];
-    let data = load_font(&o.font, &mut warn)?;
-    let face = ttf_parser::Face::parse(&data, 0).map_err(|e| e.to_string())?;
+    let (data, face_idx) = load_font(&o.font, &mut warn)?;
+    let face = ttf_parser::Face::parse(&data, face_idx).map_err(|e| e.to_string())?;
     let (upm, sz) = (face.units_per_em() as f64, o.size);
     let text = if o.markdown { strip_md(text) } else { text.to_string() };
     let (pw, ph) = paper(o, &mut warn);
@@ -210,6 +271,32 @@ mod tests {
         assert!(c.gcode.contains("M3 S255") && c.gcode.contains("M5"));
         assert!(c.warnings.is_empty(), "no missing glyphs: {:?}", c.warnings);
         assert_eq!(c.pages, Some(1));
+    }
+
+    #[test]
+    fn system_fonts_found_sorted_and_usable() {
+        let sys = system_fonts();
+        assert!(!sys.is_empty(), "the sandbox has system fonts");
+        assert!(sys.iter().all(|(_, v)| v.starts_with("sys:")), "values carry the sys: prefix");
+        assert!(sys.windows(2).all(|w| w[0].0.to_lowercase() <= w[1].0.to_lowercase()), "sorted case-insensitively");
+        let fams: Vec<String> = sys.iter().map(|(f, _)| f.to_lowercase()).collect();
+        assert!(fams.contains(&"dejavu sans".into()), "DejaVu Sans must be in the list: {fams:?}");
+        let mut u = fams.clone(); u.sort(); u.dedup();
+        assert_eq!(u.len(), fams.len(), "families are unique");
+        let val = sys.iter().find(|(f, _)| f.eq_ignore_ascii_case("dejavu sans")).unwrap().1.clone();
+        let o = Opt { font: val, ..Default::default() };
+        let c = text_to_conv("Привет, мир!", &o).unwrap();
+        assert!(!c.gcode.is_empty());
+        assert!(c.warnings.is_empty(), "no missing glyphs: {:?}", c.warnings);
+    }
+
+    #[test]
+    fn sys_prefix_missing_file_is_a_clean_error() {
+        let o = Opt { font: "sys:/nonexistent/font.ttf".into(), ..Default::default() };
+        match text_to_conv("x", &o) {
+            Ok(_) => panic!("a missing system font file must fail"),
+            Err(e) => assert!(e.contains("/nonexistent"), "{e}"),
+        }
     }
 
     #[test]

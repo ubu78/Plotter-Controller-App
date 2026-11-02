@@ -144,6 +144,47 @@ const SELFTEST_INIT_JS: &str = "setTimeout(function () {
         }, 500);
       } catch (e6) { body.invy = { exc: String(e6) }; done(); }
     };
+    var sf = function (done) { // 0.5.16 system fonts: the font dropdown must list installed families
+    // (sys: options) and picking one must really convert text — no network, the file is read from disk
+      try {
+        var sel = null;
+        document.querySelectorAll('select').forEach(function (s) {
+          if (sel) return;
+          var has = false;
+          s.querySelectorAll('option').forEach(function (o) { if ((o.value || '').indexOf('sys:') === 0) has = true; });
+          if (has) sel = s;
+        });
+        body.sysfont = { select: !!sel };
+        if (!sel) return done();
+        var opt = null;
+        sel.querySelectorAll('option').forEach(function (o) { if (!opt && (o.value || '').indexOf('sys:') === 0 && /dejavu/i.test(o.textContent)) opt = o; });
+        if (!opt) sel.querySelectorAll('option').forEach(function (o) { if (!opt && (o.value || '').indexOf('sys:') === 0) opt = o; });
+        if (!opt) { body.sysfont.no_sys_option = true; return done(); }
+        body.sysfont.family = opt.textContent;
+        var sd = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value');
+        sd.set.call(sel, opt.value);
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        var ta = null;
+        document.querySelectorAll('textarea').forEach(function (x) { if (!ta && x.id !== 'pasteta' && !x.classList.contains('gcodeedit')) ta = x; });
+        body.sysfont.textarea = !!ta;
+        if (!ta) return done();
+        var td = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
+        td.set.call(ta, 'Тест шрифт 123');
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+        var btn = null;
+        document.querySelectorAll('button').forEach(function (b) { if (!btn && /Текст → G-code|Text → G-code|Tekst → G-code/i.test(b.textContent)) btn = b; });
+        body.sysfont.convert_btn = !!btn;
+        if (!btn) return done();
+        setTimeout(function () {
+          btn.click();
+          setTimeout(function () {
+            var g = (document.getElementById('gcode') || {}).textContent || '';
+            body.sysfont.converted = /G1 X[\\d.]+ Y[\\d.]+/.test(g);
+            done();
+          }, 1200);
+        }, 200);
+      } catch (e7) { body.sysfont = { exc: String(e7) }; done(); }
+    };
     try {
       var gc = {};
       gc.load_input = !!document.querySelector('input[accept*=gcode]');
@@ -158,7 +199,7 @@ const SELFTEST_INIT_JS: &str = "setTimeout(function () {
         setTimeout(function () {
           var ta = sec.querySelector('textarea.gcodeedit');
           gc.textarea = !!ta;
-          if (!ta) return px(function () { iy(function () { ux(function () { rep(body); }); }); });
+          if (!ta) return px(function () { iy(function () { sf(function () { ux(function () { rep(body); }); }); }); });
           var d = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
           d.set.call(ta, 'G21\\nG90\\nG0 X10 Y10\\nG1 X50 Y30 F3000\\nG1 X10 Y10\\nM5');
           ta.dispatchEvent(new Event('input', { bubbles: true }));
@@ -168,14 +209,14 @@ const SELFTEST_INIT_JS: &str = "setTimeout(function () {
             setTimeout(function () {
               var p2 = document.getElementById('gcode');
               gc.pre_after = p2 ? p2.textContent.indexOf('G0 X10') >= 0 : false;
-              px(function () { iy(function () { ux(function () { rep(body); }); }); });
+              px(function () { iy(function () { sf(function () { ux(function () { rep(body); }); }); }); });
             }, 150);
           }, 150);
         }, 150);
         return;
       }
     } catch (e2) { body.gcheck = { exc: String(e2) }; }
-    px(function () { iy(function () { ux(function () { rep(body); }); }); });
+    px(function () { iy(function () { sf(function () { ux(function () { rep(body); }); }); }); });
   } catch (e) { rep({ exc: String(e) }); }
 }, 6000);";
 
@@ -289,6 +330,7 @@ fn main() {
                         if let Some(d) = ui.get("gcheck") { v["ui_gcheck"] = d.clone(); }
                         if let Some(d) = ui.get("paste") { v["ui_paste"] = d.clone(); }
                         if let Some(d) = ui.get("invy") { v["ui_invy"] = d.clone(); }
+                        if let Some(d) = ui.get("sysfont") { v["ui_sysfont"] = d.clone(); }
                         if let Some(d) = ui.get("unlock_btn") { v["ui_unlock_btn"] = d.clone(); }
                         if let Some(d) = ui.get("stop_btn") { v["ui_stop_btn"] = d.clone(); }
                         if let Some(d) = ui.get("dbg") { v["ipc_dbg"] = d.clone(); }
@@ -328,6 +370,15 @@ fn selftest(g: Arc<Grbl>, proxy: EventLoopProxy<String>) {
 
     let text_r = call(&g, "POST", "text", json!({"text": "Привет, selftest", "options": {"size": 6}}));
     r.insert("text".into(), json!(text_r.as_ref().map(|v| !v["gcode"].as_str().unwrap_or("").is_empty()).unwrap_or(false)));
+
+    // 0.5.16: system font scan — the list must be non-empty and a listed font must convert
+    let sysfonts = call(&g, "GET", "fonts", json!({})).ok().and_then(|v| {
+        let sys = v["system"].as_array()?.clone();
+        let val = (sys.first()?)["value"].as_str()?.to_string();
+        call(&g, "POST", "text", json!({"text": "Шрифт системы", "options": {"font": val, "size": 6}}))
+            .map(|r| !r["gcode"].as_str().unwrap_or("").is_empty()).ok()
+    }).unwrap_or(false);
+    r.insert("sysfonts".into(), json!(sysfonts));
 
     // 0.5.15: invert-Y mirror — the same diagonal with invertY must travel to the mirrored
     // corner and draw to the flipped end, with the footprint unchanged

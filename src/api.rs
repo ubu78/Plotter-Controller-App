@@ -79,7 +79,12 @@ pub fn handle(g: &Arc<Grbl>, method: &str, path: &str, body: Value) -> Result<Va
             ps.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
             Ok(json!(ps.into_iter().map(|x| x.2).collect::<Vec<_>>()))
         }
-        ("GET", "fonts") => Ok(json!(text::FONTS)),
+        // Two groups for the font dropdown: Google fonts (downloaded on first use) and
+        // every family installed on the system — value is `sys:<path>`, read from disk.
+        ("GET", "fonts") => Ok(json!({
+            "google": text::FONTS,
+            "system": text::system_fonts().into_iter().map(|(family, value)| json!({"family": family, "value": value})).collect::<Vec<_>>()
+        })),
         ("GET", "settings") => Ok(json!({"values": g.settings(), "meta": {}, "preset": {"110": 3000, "111": 3000, "120": 100, "121": 100, "32": 0}})),
         ("GET", "selftest_info") => Ok(json!({"version": env!("CARGO_PKG_VERSION"), "fonts": text::FONTS.len(), "platform": std::env::consts::OS})),
         ("GET", "version") => Ok(json!({"version": env!("CARGO_PKG_VERSION")})),
@@ -226,8 +231,16 @@ mod fonts_test {
     fn fonts_list_is_complete() {
         let (g, _rx) = Grbl::new();
         let v = handle(&g, "GET", "fonts", json!({})).unwrap();
-        let n = v.as_array().map(|a| a.len());
+        let n = v["google"].as_array().map(|a| a.len());
         assert_eq!(n, Some(14), "fonts response: {v}");
-        assert!(v.as_array().unwrap().iter().all(|x| x.is_string()));
+        assert!(v["google"].as_array().unwrap().iter().all(|x| x.is_string()));
+        let sys = v["system"].as_array().expect("system font array");
+        assert!(!sys.is_empty(), "the sandbox has system fonts");
+        assert!(sys.iter().all(|f| f["value"].as_str().map_or(false, |s| s.starts_with("sys:"))), "every entry carries a sys: value");
+        // a listed system font must actually convert
+        let val = sys.iter().find(|f| f["family"].as_str() == Some("DejaVu Sans"))
+            .map(|f| f["value"].clone()).unwrap_or(json!(sys[0]["value"].clone()));
+        let r = handle(&g, "POST", "text", json!({"text": "Тест шрифта", "options": {"font": val, "size": 6}})).unwrap();
+        assert!(!r["gcode"].as_str().unwrap_or("").is_empty(), "a system font must convert: {r}");
     }
 }

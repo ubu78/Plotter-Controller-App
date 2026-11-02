@@ -26,10 +26,12 @@ export default function SourcePanel({ t, pen, status, setLog, onConv }) {
     try { return { ...d, ...JSON.parse(localStorage.svgopts || '{}') }; } catch (e) { return d; } });
   useEffect(() => { try { localStorage.svgopts = JSON.stringify(o); } catch (e) { /* storage blocked */ } }, [o]);
   const [tx, setTx] = useState({ text: '', font: 'Roboto', size: 6, lineHeight: 1.4, markdown: false, fillMode: 'pen', fillSpacing: 0, hatchAngle: 45, startX: 0, startY: 0 });
-  const [fonts, setFonts] = useState([]); const [svg, setSvg] = useState('');
+  const [fonts, setFonts] = useState({ google: [], system: [] }); const [svg, setSvg] = useState('');
   const [mode, setMode] = useState('svg'); const [off, setOff] = useState([0, 0]); const [page, setPage] = useState(0); const [conv, setConv] = useState(null); const [pick, setPick] = useState(false); const [pdf, setPdf] = useState(''); const [pdfDraw, setPdfDraw] = useState(true);
   const set = (k, v) => setO(p => ({ ...p, [k]: v })); const st = (k, v) => setTx(p => ({ ...p, [k]: v }));
-  useEffect(() => { api('fonts').then(setFonts); }, []);
+  // Google fonts + every family installed on the system; ↻ rescans after installing new fonts
+  const loadFonts = () => api('fonts').then(f => setFonts(Array.isArray(f) ? { google: f, system: [] } : { google: f.google || [], system: f.system || [] }));
+  useEffect(() => { loadFonts(); }, []);
   const run = async (m = mode, of = off, pg = page, source = svg, txo = tx, pdfData = pdf) => {
     if (m === 'svg' && !source) return;
     const options = { ...o, ...pen, offsetX: of[0], offsetY: of[1], page: pg };
@@ -61,7 +63,10 @@ export default function SourcePanel({ t, pen, status, setLog, onConv }) {
         setTx(p => ({ ...p, text: r.text, markdown: /\.md$/i.test(f.name) })); }} /></label>
       <label><span>{t('pdfdraw')}</span><input type="checkbox" checked={pdfDraw} onChange={e => setPdfDraw(e.target.checked)} /></label>
       <textarea rows={6} style={{ width: '100%' }} value={tx.text} placeholder="Привет, мир! Tere, õäöü" onChange={e => st('text', e.target.value)} />
-      <label><span>{t('font')}</span><select value={tx.font} onChange={e => st('font', e.target.value)}>{fonts.map(f => <option key={f}>{f}</option>)}</select></label>
+      <label><span>{t('font')}</span><select value={tx.font} onChange={e => st('font', e.target.value)}>
+        <optgroup label={t('fontgoogle')}>{fonts.google.map(f => <option key={f}>{f}</option>)}</optgroup>
+        {fonts.system.length > 0 && <optgroup label={t('fontsys')}>{fonts.system.map(f => <option key={f.value} value={f.value}>{f.family}</option>)}</optgroup>}
+      </select><button title={t('frefresh')} onClick={e => { e.preventDefault(); loadFonts(); }}>↻</button></label>
       <label><span>{t('fsize')}</span>{num('size', tx.size, st)}</label><label><span>{t('lh')}</span>{num('lineHeight', tx.lineHeight, st)}</label>
       <label><span>{t('speed')}</span>{num('feed', o.feed)} мм/мин</label>
       <div className="stylerow" role="radiogroup" aria-label={t('style')}>
