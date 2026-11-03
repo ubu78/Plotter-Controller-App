@@ -23,7 +23,7 @@ const GOOGLE_STYLES = ['regular', 'bold', 'italic', 'bolditalic']; // resolved o
 export default function SourcePanel({ t, pen, status, setLog, onConv }) {
   // Conversion options persist in localStorage: the machine's Y direction does not change
   // between sessions, so «Invert Y» must not reset on restart either.
-  const [o, setO] = useState(() => { const d = { paper: 'A4', margin: 0, scale: 100, center: false, feed: 3000, landscape: false, laserOff: true, invertY: false };
+  const [o, setO] = useState(() => { const d = { paper: 'A4', margin: 0, scale: 100, center: false, feed: 3000, landscape: false, laserOff: true, invertY: false, yOrigin: 'top' };
     try { return { ...d, ...JSON.parse(localStorage.svgopts || '{}') }; } catch (e) { return d; } });
   useEffect(() => { try { localStorage.svgopts = JSON.stringify(o); } catch (e) { /* storage blocked */ } }, [o]);
   const [tx, setTx] = useState({ text: '', font: 'Roboto', fontStyle: 'regular', size: 6, lineHeight: 1.4, markdown: false, fillMode: 'pen', fillSpacing: 0, hatchAngle: 45, startX: 0, startY: 0 });
@@ -73,6 +73,13 @@ export default function SourcePanel({ t, pen, status, setLog, onConv }) {
       <label><span>{t('laser')}</span><input type="checkbox" checked={o.laserOff} onChange={e => set('laserOff', e.target.checked)} /></label>
       <label title={t('invyhint')}><span>{t('invy')}</span><input type="checkbox" checked={o.invertY} onChange={e => set('invertY', e.target.checked)} /></label>
       <div className="hint">{t('invyhint')}</div>
+      <label title={t('yorhint')}><span>{t('yorigin')}</span>
+        <select value={o.yOrigin || 'top'} onChange={e => set('yOrigin', e.target.value)}>
+          <option value="top">{t('yotop')}</option>
+          <option value="bottom">{t('yobottom')}</option>
+          <option value="reverse">{t('yoreverse')}</option>
+        </select></label>
+      <div className="hint">{t('yorhint')}</div>
       <div className="row"><button className="pri" onClick={() => run()}>{t('convert')}</button>
         <button onClick={() => { if (!conv?.gcode) return setLog(l => [...l, t('noconv')]);
           api('savefile', { name: 'drawing.gcode', content: conv.gcode }).then(r => setLog(l => [...l, '→ ' + (r?.path || '')]), e => setLog(l => [...l, 'ERR ' + e])); }}>{t('save')}</button></div>
@@ -122,7 +129,7 @@ export default function SourcePanel({ t, pen, status, setLog, onConv }) {
         <button onClick={() => mode !== 'svg' && page > 0 && run(mode, off, page - 1)}>◀</button><b>{conv?.pages ? `${page + 1}/${conv.pages}` : '–'}</b>
         <button onClick={() => mode !== 'svg' && conv && page < conv.pages - 1 && run(mode, off, page + 1)}>▶</button></div>
       <div className="warn">{t('drag')}</div></section>
-    <section><h2>{t('preview')}</h2><Preview conv={conv} pos={status.connected ? status.wpos : null} pick={pick}
+    <section><h2>{t('preview')}</h2><Preview conv={conv} pos={status.connected ? status.wpos : null} pick={pick} yOrigin={mode === 'svg' || mode === 'pdf' ? (o.yOrigin || 'top') : 'top'}
       onPick={(x, y) => { const n = { ...tx, startX: +x.toFixed(1), startY: +y.toFixed(1) }; setTx(n); setPick(false); setMode('text'); setPage(0); run('text', off, 0, svg, n); }}
       onDrop={(dx, dy) => { if (mode === 'text') { const n = { ...tx, startX: +Math.max(0, tx.startX + dx).toFixed(1), startY: +Math.max(0, tx.startY + dy).toFixed(1) }; setTx(n); run('text', off, page, svg, n); }
         else { const n = [off[0] + dx, off[1] + dy]; setOff(n); run(mode, n); } }} /></section></>);

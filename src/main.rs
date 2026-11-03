@@ -144,6 +144,50 @@ const SELFTEST_INIT_JS: &str = "setTimeout(function () {
         }, 500);
       } catch (e6) { body.invy = { exc: String(e6) }; done(); }
     };
+    var yo = function (done) { // 0.5.18 Y origin: switching the SVG card's select to 'bottom'
+    // (machine zero at the sheet bottom, standard CNC) must move the same loaded SVG to the top
+    // of the A4 sheet (Y 287..297); then 'top' is restored. Idempotent: the select is forced to
+    // 'top' first and the invert-Y checkbox is turned OFF (the iy chain leaves it ON)
+      try {
+        var fi3 = document.querySelector('input[accept*=svg]');
+        body.yorigin = { input: !!fi3 };
+        if (!fi3) { body.yorigin.skip = 'no-input'; return done(); }
+        var sec4 = fi3.closest('section');
+        var ys = null, cv3 = null, cb3 = null;
+        if (sec4) {
+          sec4.querySelectorAll('select').forEach(function (s) { if (ys) return; var has = false; s.querySelectorAll('option').forEach(function (o) { if (o.value === 'bottom') has = true; }); if (has) ys = s; });
+          sec4.querySelectorAll('button').forEach(function (x) { if (!cv3 && /конверт|convert|konverteeri/i.test(x.textContent)) cv3 = x; });
+          sec4.querySelectorAll('label').forEach(function (l) { var c = l.querySelector('input[type=checkbox]'); if (c && /инвертир|invert|peegeld/i.test(l.textContent)) cb3 = c; });
+        }
+        body.yorigin.select = !!ys; body.yorigin.conv_btn = !!cv3;
+        if (!ys || !cv3) return done();
+        if (cb3 && cb3.checked) cb3.click(); // iy left the mirror ON — turn it off for absolute coords
+        var sd4 = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value');
+        sd4.set.call(ys, 'top');
+        ys.dispatchEvent(new Event('change', { bubbles: true }));
+        setTimeout(function () {
+          sd4.set.call(ys, 'bottom');
+          ys.dispatchEvent(new Event('change', { bubbles: true }));
+          setTimeout(function () {
+            cv3.click();
+            setTimeout(function () {
+              var g5 = (document.getElementById('gcode') || {}).textContent || '';
+              body.yorigin.bottom = g5.indexOf('Y297.000') >= 0 && g5.indexOf('Y287.000') >= 0 && g5.indexOf('Y10.000') < 0;
+              sd4.set.call(ys, 'top');
+              ys.dispatchEvent(new Event('change', { bubbles: true }));
+              setTimeout(function () {
+                cv3.click();
+                setTimeout(function () {
+                  var g6 = (document.getElementById('gcode') || {}).textContent || '';
+                  body.yorigin.restored = g6.indexOf('G1 X0.000 Y0.000') >= 0 && g6.indexOf('Y287.000') < 0;
+                  done();
+                }, 450);
+              }, 150);
+            }, 450);
+          }, 150);
+        }, 150);
+      } catch (e9) { body.yorigin = { exc: String(e9) }; done(); }
+    };
     var sf = function (done) { // 0.5.16 system fonts: the font dropdown must list installed families
     // (sys: options) and picking one must really convert text — no network, the file is read from disk
       try {
@@ -224,7 +268,7 @@ const SELFTEST_INIT_JS: &str = "setTimeout(function () {
         setTimeout(function () {
           var ta = sec.querySelector('textarea.gcodeedit');
           gc.textarea = !!ta;
-          if (!ta) return px(function () { iy(function () { sf(function () { ux(function () { rep(body); }); }); }); });
+          if (!ta) return px(function () { iy(function () { yo(function () { sf(function () { ux(function () { rep(body); }); }); }); }); });
           var d = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
           d.set.call(ta, 'G21\\nG90\\nG0 X10 Y10\\nG1 X50 Y30 F3000\\nG1 X10 Y10\\nM5');
           ta.dispatchEvent(new Event('input', { bubbles: true }));
@@ -234,14 +278,14 @@ const SELFTEST_INIT_JS: &str = "setTimeout(function () {
             setTimeout(function () {
               var p2 = document.getElementById('gcode');
               gc.pre_after = p2 ? p2.textContent.indexOf('G0 X10') >= 0 : false;
-              px(function () { iy(function () { sf(function () { ux(function () { rep(body); }); }); }); });
+              px(function () { iy(function () { yo(function () { sf(function () { ux(function () { rep(body); }); }); }); }); });
             }, 150);
           }, 150);
         }, 150);
         return;
       }
     } catch (e2) { body.gcheck = { exc: String(e2) }; }
-    px(function () { iy(function () { sf(function () { ux(function () { rep(body); }); }); }); });
+    px(function () { iy(function () { yo(function () { sf(function () { ux(function () { rep(body); }); }); }); }); });
   } catch (e) { rep({ exc: String(e) }); }
 }, 6000);";
 
@@ -356,6 +400,7 @@ fn main() {
                         if let Some(d) = ui.get("paste") { v["ui_paste"] = d.clone(); }
                         if let Some(d) = ui.get("invy") { v["ui_invy"] = d.clone(); }
                         if let Some(d) = ui.get("sysfont") { v["ui_sysfont"] = d.clone(); }
+                        if let Some(d) = ui.get("yorigin") { v["ui_yorigin"] = d.clone(); }
                         if let Some(d) = ui.get("unlock_btn") { v["ui_unlock_btn"] = d.clone(); }
                         if let Some(d) = ui.get("stop_btn") { v["ui_stop_btn"] = d.clone(); }
                         if let Some(d) = ui.get("dbg") { v["ipc_dbg"] = d.clone(); }
@@ -429,6 +474,17 @@ fn selftest(g: Arc<Grbl>, proxy: EventLoopProxy<String>) {
         let s = v["gcode"].as_str().unwrap_or("");
         s.contains("G1 X0.000 Y10.000") && s.contains("G1 X30.000 Y0.000") && !s.contains("G1 X30.000 Y10.000")
     }).unwrap_or(false)));
+
+    // 0.5.18: Y origin — the machine zero at the BOTTOM edge of the sheet (standard CNC) must
+    // move the whole drawing to the top of the A4 sheet (Y ~287..297); the reverse mode negates
+    // Y for feed machines that scroll the sheet backwards
+    let ybot = call(&g, "POST", "svg", json!({"svg": "<svg xmlns='http://www.w3.org/2000/svg' width='40mm' viewBox='0 0 40 20'><path d='M5 5 L35 15'/></svg>", "options": {"yOrigin": "bottom"}}));
+    let yrev = call(&g, "POST", "svg", json!({"svg": "<svg xmlns='http://www.w3.org/2000/svg' width='40mm' viewBox='0 0 40 20'><path d='M5 5 L35 15'/></svg>", "options": {"yOrigin": "reverse"}}));
+    let b = ybot.as_ref().map(|v| { let s = v["gcode"].as_str().unwrap_or("");
+        s.contains("G1 X0.000 Y297.000") && s.contains("G1 X30.000 Y287.000") && !s.contains("G1 X30.000 Y10.000") }).unwrap_or(false);
+    let rv = yrev.as_ref().map(|v| { let s = v["gcode"].as_str().unwrap_or("");
+        s.contains("G1 X0.000 Y0.000") && s.contains("G1 X30.000 Y-10.000") }).unwrap_or(false);
+    r.insert("yorigin".into(), json!(b && rv));
 
     let servo = text_r.as_ref().map(|v| { let s = v["gcode"].as_str().unwrap_or("");
         s.contains("M5") && s.contains("M3 S255") && s.contains("G4 P") && s.contains("$32=0") }).unwrap_or(false);

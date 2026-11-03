@@ -15,6 +15,12 @@ pub struct Opt {
     pub z_feed: f64, pub servo_down: String, pub servo_up: String, pub landscape: bool, pub laser_off: bool, pub dwell: f64,
     /// 0.5.15: mirror the drawing vertically (for machines whose Y+ travels "up the page")
     pub invert_y: bool,
+    /// 0.5.18: where the machine's Y zero sits relative to the SHEET: "top" (default, SVG
+    /// convention: Y = distance from the top edge, what the preview shows), "bottom" (standard
+    /// CNC: zero at the bottom edge of the sheet, Y travels up — the drawing lands at the top
+    /// of the real sheet) or "reverse" (Y = -Y: feed-style machines whose Y+ pulls the sheet
+    /// backwards; negated coordinates make the sheet feed forward instead)
+    pub y_origin: String,
     // text
     pub font: String, pub size: f64, pub line_height: f64, pub markdown: bool, pub fill_mode: String,
     /// Infill step for fill/hatch styles, mm; 0 = automatic from the font size
@@ -28,7 +34,7 @@ impl Default for Opt {
     fn default() -> Self {
         Opt { paper: "A4".into(), paper_w: 0.0, paper_h: 0.0, margin: 0.0, scale: 100.0, center: false, offset_x: 0.0, offset_y: 0.0,
             feed: 3000.0, pen_mode: "servo".into(), z_up: 5.0, z_down: 0.0, z_feed: 500.0, servo_down: "M3 S255".into(), servo_up: "M5".into(),
-            landscape: false, laser_off: true, dwell: 0.15, invert_y: false, font: "Roboto".into(), size: 6.0, line_height: 1.4, markdown: false,
+            landscape: false, laser_off: true, dwell: 0.15, invert_y: false, y_origin: "top".into(), font: "Roboto".into(), size: 6.0, line_height: 1.4, markdown: false,
             fill_mode: "pen".into(), fill_spacing: 0.0, hatch_angle: 45.0, start_x: 0.0, start_y: 0.0, page: None, keep_origin: false }
     }
 }
@@ -126,6 +132,16 @@ pub fn polys_to_conv(polys: Polys, unit: f64, o: &Opt, warn: Vec<String>) -> Con
     segs_to_conv(segs, unit, o, warn)
 }
 
+/// Mirror all paths around the horizontal line y = ky/2 (y' = ky - y). Mirroring reverses
+/// orientation, so every arc swaps G2 <-> G3; I/J are derived from the moved points by the
+/// emitter and stay exact. Shared by «Invert Y» (0.5.15) and «Y origin» (0.5.18).
+fn mirror_y(paths: SegPolys, ky: f64) -> SegPolys {
+    paths.into_iter().map(|p| p.into_iter().map(|seg| match seg {
+        Seg::L(v) => Seg::L([v[0], ky - v[1]]),
+        Seg::A { s, e, c, cw } => Seg::A { s: [s[0], ky - s[1]], e: [e[0], ky - e[1]], c: [c[0], ky - c[1]], cw: !cw },
+    }).collect()).collect()
+}
+
 /// Segments in source units -> positioned on the sheet (origin top-left, Y down) -> G-code.
 pub fn segs_to_conv(segs: SegPolys, unit: f64, o: &Opt, mut warn: Vec<String>) -> Conv {
     let (pw, ph) = paper(o, &mut warn);
@@ -169,11 +185,21 @@ pub fn segs_to_conv(segs: SegPolys, unit: f64, o: &Opt, mut warn: Vec<String>) -
             }
         }
         let my = if b[1].is_finite() { b[1] + b[3] } else { 0.0 }; // 2 × mid-Y
-        paths.into_iter().map(|p| p.into_iter().map(|seg| match seg {
-            Seg::L(v) => Seg::L([v[0], my - v[1]]),
-            Seg::A { s, e, c, cw } => Seg::A { s: [s[0], my - s[1]], e: [e[0], my - e[1]], c: [c[0], my - c[1]], cw: !cw },
-        }).collect()).collect()
+        mirror_y(paths, my)
     } else { paths };
+    // 0.5.18: the sheet space above counts Y from the TOP edge (SVG convention — what the
+    // preview shows). Machines that count Y the other way round need the whole sheet mirrored:
+    // "bottom" flips around the sheet height, so the drawing moves to the OPPOSITE edge of the
+    // real sheet (a letterhead previewed at the top is plotted at the top of an A4 sheet loaded
+    // with its bottom edge at the machine zero); "reverse" flips around Y=0, giving negative
+    // coordinates — for feed machines whose Y+ scrolls the sheet backwards: the sheet then
+    // feeds forward and the pen draws the distance-from-the-top-edge content correctly. Both
+    // are mirrors, so arcs swap G2 <-> G3; I/J stay exact (recomputed from the moved points).
+    let paths: SegPolys = match o.y_origin.as_str() {
+        "bottom" => mirror_y(paths, ph),
+        "reverse" => mirror_y(paths, 0.0),
+        _ => paths,
+    };
     // display polylines (preview): arcs are sampled every ~15 degrees
     let disp: Polys = paths.iter().map(|p| {
         let mut out: Vec<[f64; 2]> = vec![];
@@ -190,7 +216,10 @@ pub fn segs_to_conv(segs: SegPolys, unit: f64, o: &Opt, mut warn: Vec<String>) -
         out
     }).collect();
     let bb = bbox(&disp);
-    if bb[0] < 0.0 || bb[1] < 0.0 || bb[2] > pw || bb[3] > ph { warn.push("Drawing exceeds paper after offset".into()); }
+    // "reverse" intentionally produces negative Y (the sheet top edge starts at the machine zero
+    // and Y+ points away from the sheet) — that is not an "exceeds paper" situation
+    let neg_y_ok = o.y_origin == "reverse";
+    if bb[0] < 0.0 || bb[2] > pw || bb[3] > ph || (!neg_y_ok && bb[1] < 0.0) { warn.push("Drawing exceeds paper after offset".into()); }
 
     let dw = if o.dwell > 0.0 { format!("\nG4 P{}", o.dwell) } else { String::new() };
     let up = format!("{}{}", if o.pen_mode == "z" { format!("G0 Z{}", o.z_up) } else { o.servo_up.clone() }, dw);
@@ -381,6 +410,61 @@ mod tests {
         assert!(!mir.gcode.contains("G3 "), "no G3 left: {}", mir.gcode);
         let (b1, b2) = (base.bbox.unwrap(), mir.bbox.unwrap());
         assert!((b1[1] - b2[1]).abs() < 0.01 && (b1[3] - b2[3]).abs() < 0.01, "arc footprint unchanged: {b1:?} vs {b2:?}");
+    }
+
+    #[test]
+    fn y_origin_bottom_moves_drawing_to_the_top_of_the_sheet() {
+        // 0.5.18: a machine whose Y zero sits at the BOTTOM edge of the sheet (standard CNC).
+        // The sheet mirror moves the whole drawing to the opposite edge: a diagonal drawn at
+        // Y 0..10 on an A4 sheet must be emitted at Y 287..297 — the letterhead previewed at
+        // the top of the sheet lands at the top of the real sheet
+        let o = Opt { y_origin: "bottom".into(), ..Default::default() };
+        let c = polys_to_conv(vec![vec![[5.0, 5.0], [35.0, 15.0]]], 1.0, &o, vec![]);
+        assert!(c.gcode.contains("G1 X0.000 Y297.000"), "travel to the sheet-top corner: {}", c.gcode);
+        assert!(c.gcode.contains("G1 X30.000 Y287.000"), "line end flips to Y = height - y: {}", c.gcode);
+        assert!(!c.gcode.contains("Y10.000") && !c.gcode.contains("Y0.000\n"), "no unflipped motion left: {}", c.gcode);
+        let bb = c.bbox.unwrap();
+        assert!((bb[1] - 287.0).abs() < 0.01 && (bb[3] - 297.0).abs() < 0.01, "bbox moved to the top edge: {bb:?}");
+        assert!(c.warnings.is_empty(), "no paper warning: {:?}", c.warnings);
+    }
+
+    #[test]
+    fn y_origin_reverse_negates_y_without_warning() {
+        // feed machines whose Y+ scrolls the sheet backwards: Y = -Y, coordinates go negative,
+        // and that must NOT raise the "exceeds paper" warning (the sheet top edge starts at the
+        // machine zero and Y+ points away from the sheet)
+        let o = Opt { y_origin: "reverse".into(), ..Default::default() };
+        let c = polys_to_conv(vec![vec![[5.0, 5.0], [35.0, 15.0]]], 1.0, &o, vec![]);
+        assert!(c.gcode.contains("G1 X0.000 Y0.000"), "start corner sits on the zero: {}", c.gcode);
+        assert!(c.gcode.contains("G1 X30.000 Y-10.000"), "line end flips to -y: {}", c.gcode);
+        assert!(!c.gcode.contains("G1 X30.000 Y10.000"), "no unflipped motion left: {}", c.gcode);
+        assert!(!c.warnings.iter().any(|s| s.contains("exceeds paper")), "negative Y is intentional: {:?}", c.warnings);
+        // with the default "top" origin a negative Y can only come from a negative offset —
+        // and there it IS a misplacement worth warning about
+        let o2 = Opt { offset_y: -10.0, ..Default::default() };
+        let c2 = polys_to_conv(vec![vec![[5.0, 5.0], [35.0, 15.0]]], 1.0, &o2, vec![]);
+        assert!(c2.warnings.iter().any(|s| s.contains("exceeds paper")));
+    }
+
+    #[test]
+    fn y_origin_bottom_swaps_arc_direction() {
+        // the 270-degree CCW arc from arcs_emit_g2_g3_with_ij, mirrored around the A4 height:
+        // G3 becomes G2, the endpoint moves to Y = 297 - y and I/J stay radius-exact
+        let o = Opt { y_origin: "bottom".into(), ..Default::default() };
+        let segs: SegPolys = vec![vec![Seg::A { s: [0.0, 0.0], e: [10.0, 10.0], c: [10.0, 0.0], cw: false }]];
+        let c = segs_to_conv(segs, 1.0, &o, vec![]);
+        // sheet space: s(0,10) e(10,20) c(10,10); bottom mirror: s(0,287) e(10,277) c(10,287)
+        assert!(c.gcode.contains("G2 X10.000 Y277.000 I10.000 J0.000"), "{}", c.gcode);
+        assert!(!c.gcode.contains("G3 "), "no G3 left: {}", c.gcode);
+    }
+
+    #[test]
+    fn y_origin_bottom_respects_paper_setting() {
+        // the flip anchor is the configured sheet height (custom paper), not a hard-coded A4
+        let o = Opt { y_origin: "bottom".into(), paper: "custom".into(), paper_w: 100.0, paper_h: 150.0, ..Default::default() };
+        let c = polys_to_conv(vec![vec![[5.0, 5.0], [35.0, 15.0]]], 1.0, &o, vec![]);
+        assert!(c.gcode.contains("G1 X0.000 Y150.000"), "flip around the custom sheet height: {}", c.gcode);
+        assert!(c.gcode.contains("G1 X30.000 Y140.000"), "{}", c.gcode);
     }
 
     #[test]
