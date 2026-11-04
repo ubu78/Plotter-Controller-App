@@ -487,7 +487,9 @@ fn selftest(g: Arc<Grbl>, proxy: EventLoopProxy<String>) {
     r.insert("yorigin".into(), json!(b && rv));
 
     let servo = text_r.as_ref().map(|v| { let s = v["gcode"].as_str().unwrap_or("");
-        s.contains("M5") && s.contains("M3 S255") && s.contains("G4 P") && s.contains("$32=0") }).unwrap_or(false);
+        // 0.5.19 convention: M3 S255 lifts (first), M5 lowers before drawing
+        s.contains("$32=0") && s.contains("G4 P")
+            && s.find("M3 S255").zip(s.find("\nM5")).map_or(false, |(u, d)| u < d) }).unwrap_or(false);
     r.insert("servo".into(), json!(servo));
 
     let storage = call(&g, "POST", "savefile", json!({"name": "plotter-selftest.txt", "content": "ok"})).ok()

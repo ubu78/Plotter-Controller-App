@@ -12,7 +12,11 @@ use serde::{Deserialize, Serialize};
 pub struct Opt {
     pub paper: String, pub paper_w: f64, pub paper_h: f64, pub margin: f64, pub scale: f64, pub center: bool,
     pub offset_x: f64, pub offset_y: f64, pub feed: f64, pub pen_mode: String, pub z_up: f64, pub z_down: f64,
-    pub z_feed: f64, pub servo_down: String, pub servo_up: String, pub landscape: bool, pub laser_off: bool, pub dwell: f64,
+    pub z_feed: f64, pub landscape: bool, pub laser_off: bool, pub dwell: f64,
+    /// 0.5.19: the default servo convention after the author flipped the servo horn —
+    /// the ACTIVE angle (M3 S<val>) lifts the pen, M5 (spindle stop, pin low = rest) lowers it.
+    /// Both stay free-form commands editable in the pen panel.
+    pub servo_down: String, pub servo_up: String,
     /// 0.5.15: mirror the drawing vertically (for machines whose Y+ travels "up the page")
     pub invert_y: bool,
     /// 0.5.18: where the machine's Y zero sits relative to the SHEET: "top" (default, SVG
@@ -33,7 +37,7 @@ pub struct Opt {
 impl Default for Opt {
     fn default() -> Self {
         Opt { paper: "A4".into(), paper_w: 0.0, paper_h: 0.0, margin: 0.0, scale: 100.0, center: false, offset_x: 0.0, offset_y: 0.0,
-            feed: 3000.0, pen_mode: "servo".into(), z_up: 5.0, z_down: 0.0, z_feed: 500.0, servo_down: "M3 S255".into(), servo_up: "M5".into(),
+            feed: 3000.0, pen_mode: "servo".into(), z_up: 5.0, z_down: 0.0, z_feed: 500.0, servo_down: "M5".into(), servo_up: "M3 S255".into(),
             landscape: false, laser_off: true, dwell: 0.15, invert_y: false, y_origin: "top".into(), font: "Roboto".into(), size: 6.0, line_height: 1.4, markdown: false,
             fill_mode: "pen".into(), fill_spacing: 0.0, hatch_angle: 45.0, start_x: 0.0, start_y: 0.0, page: None, keep_origin: false }
     }
@@ -296,7 +300,11 @@ mod tests {
         let c = polys_to_conv(vec![vec![[0.0, 0.0], [10.0, 0.0], [10.0, 5.0], [0.0, 0.0]]], 1.0, &o, vec![]);
         let g = &c.gcode;
         assert!(g.contains("$32=0"), "laser off first");
-        assert!(g.contains("M5") && g.contains("M3 S255"), "servo up/down");
+        // 0.5.19 convention: M3 S255 lifts the pen, M5 lowers it; the file must start with the
+        // pen UP and lower it only before the first drawing move.
+        let up = g.find("M3 S255").expect("pen-up M3 S255 present");
+        let down = g.find("\nM5").expect("pen-down M5 present");
+        assert!(up < down, "pen up (M3 S255) before the first pen down (M5)");
         assert!(g.contains("G4 P0.15"), "dwell after pen commands");
         assert!(g.starts_with("; Plotter Controller"));
         assert!(g.contains("G1 X0 Y0"), "return home at the drawing feed (program №1 style)");

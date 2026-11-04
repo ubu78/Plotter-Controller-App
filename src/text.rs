@@ -428,11 +428,13 @@ mod tests {
     #[test]
     fn pen_mode_needs_no_more_pen_downs_than_single() {
         ensure_test_font();
-        let downs = |fm: &str| {
+        // 0.5.19 defaults emit M3 S255 as pen UP — counting its occurrences counts the lifts,
+        // which is 1 + the number of pen-downs and keeps the same ordering.
+        let lifts = |fm: &str| {
             let o = Opt { font: "DejaVu Sans".into(), fill_mode: fm.into(), ..Default::default() };
             text_to_conv("шш", &o).unwrap().gcode.matches("M3 S255").count()
         };
-        let (pen, single) = (downs("pen"), downs("single"));
+        let (pen, single) = (lifts("pen"), lifts("single"));
         assert!(pen > 0 && pen <= single, "pen must not be worse than single: pen={pen} single={single}");
     }
 

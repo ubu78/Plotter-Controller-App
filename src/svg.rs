@@ -215,8 +215,9 @@ mod tests {
             let t: Vec<&str> = l.split_whitespace().collect();
             let num = |s: &str| s[1..].parse::<f64>().ok();
             match t.first().copied().unwrap_or("") {
-                "M3" => down = true,
-                "M5" => down = false,
+                // 0.5.19 convention: M3 (active angle) = pen up, M5 (rest) = pen down
+                "M3" => down = false,
+                "M5" => down = true,
                 "G1" => {
                     let (mut px, mut py) = (None, None);
                     for w in &t[1..] { match w.chars().next() { Some('X') => px = num(w), Some('Y') => py = num(w), _ => {} } }

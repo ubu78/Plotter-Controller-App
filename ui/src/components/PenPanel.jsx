@@ -1,4 +1,4 @@
-export const DEFAULT_PEN = { penMode: 'servo', servoUp: 'M5', servoDown: 'M3 S255', zUp: 5, zDown: 0, dwell: 0.15, servStep: 5 };
+export const DEFAULT_PEN = { penMode: 'servo', servoUp: 'M3 S255', servoDown: 'M5', zUp: 5, zDown: 0, dwell: 0.15, servStep: 5 };
 const sval = s => { const m = /S(-?\d*\.?\d+)/.exec(s || ''); return m ? +m[1] : null; };
 const setS = (cmd, v) => (cmd || '').replace(/S(-?\d*\.?\d+)/, `S${v}`);
 export default function PenPanel({ t, pen, setPen, send }) {
@@ -33,11 +33,11 @@ export default function PenPanel({ t, pen, setPen, send }) {
             <button title={`${t('tup')} → ${pen.servoUp}`} onClick={() => send(pen.servoUp)}>▲ {t('tup')}</button>
           </div>
           {/* Pen schemes as one-click presets — no degree hunting. №1 mirrors the alternative
-              program's G-code exactly (up = M5 with no angle at all, down = M3 S30); the second
-              is the inverted scheme (up = M3 S45, down = M5 rest). */}
+              program's G-code exactly (up = M3 S30, down = M5 rest) — the scheme the flipped
+              servo needs; the second is the legacy scheme (up = M5 rest, down = M3 S45). */}
           <div className="row testrow">
-            <button title={t('preset1t')} onClick={() => setPen({ ...pen, servoUp: 'M5', servoDown: 'M3 S30' })}>№1: ↑ M5 · ↓ M3 S30</button>
-            <button title={t('preset2t')} onClick={() => setPen({ ...pen, servoUp: 'M3 S45', servoDown: 'M5' })}>↑ M3 S45 · ↓ M5</button>
+            <button title={t('preset1t')} onClick={() => setPen({ ...pen, servoUp: 'M3 S30', servoDown: 'M5' })}>№1: ↑ M3 S30 · ↓ M5</button>
+            <button title={t('preset2t')} onClick={() => setPen({ ...pen, servoUp: 'M5', servoDown: 'M3 S45' })}>↑ M5 · ↓ M3 S45</button>
           </div>
           <div className="hint">{t('svnote')}</div></>
       : <label><span style={{ minWidth: 150 }}>{t('zud')}</span>{num('zUp')}{num('zDown')}</label>}
