@@ -83,6 +83,7 @@ export default function SourcePanel({ t, pen, status, setLog, onConv }) {
       <div className="row"><button className="pri" onClick={() => run()}>{t('convert')}</button>
         <button onClick={() => { if (!conv?.gcode) return setLog(l => [...l, t('noconv')]);
           api('savefile', { name: 'drawing.gcode', content: conv.gcode }).then(r => setLog(l => [...l, '→ ' + (r?.path || '')]), e => setLog(l => [...l, 'ERR ' + e])); }}>{t('save')}</button></div>
+      <div className="hint">{t('dragsvg')}</div>
       <div className="warn">{(conv?.warnings || []).join(' • ')}</div></section>
     <section><h2>{t('text')}</h2>
       <label><span>{t('doc')}</span><input type="file" accept=".pdf,.docx,.txt,.md" onChange={async e => { const f = e.target.files[0]; if (!f) return;

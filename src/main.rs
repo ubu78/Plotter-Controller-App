@@ -188,6 +188,54 @@ const SELFTEST_INIT_JS: &str = "setTimeout(function () {
         }, 150);
       } catch (e9) { body.yorigin = { exc: String(e9) }; done(); }
     };
+    var dg = function (done) { // 0.5.21 drag: a synthetic pointer drag on the sheet preview
+    // must shift the drawing live and the reconversion must bake the offset into the G-code
+    // (the first G1 X grows by ~40px * mm-per-screen-pixel). Verifies the whole loop the user
+    // reported broken: canvas pointer events -> onDrop -> offsetX/offsetY -> new gcode.
+      try {
+        var fi5 = document.querySelector('input[accept*=svg]');
+        body.drag = { input: !!fi5 };
+        if (!fi5) { body.drag.skip = 'no-input'; return done(); }
+        var cv5 = null;
+        document.querySelectorAll('canvas').forEach(function (c) { if (!cv5 && c.clientWidth > 50) cv5 = c; });
+        body.drag.canvas = !!cv5;
+        if (!cv5 || typeof PointerEvent !== 'function') { body.drag.skip = 'no-canvas-or-pe'; return done(); }
+        var dt5 = new DataTransfer();
+        dt5.items.add(new File([\"<svg xmlns='http://www.w3.org/2000/svg' width='40mm' viewBox='0 0 40 20'><path d='M5 5 L35 15'/></svg>\"], 'dg.svg', { type: 'image/svg+xml' }));
+        fi5.files = dt5.files;
+        fi5.dispatchEvent(new Event('change', { bubbles: true }));
+        setTimeout(function () {
+          var gs5 = function () { return (document.getElementById('gcode') || {}).textContent || ''; };
+          var g7 = gs5();
+          body.drag.baseline = g7.indexOf('G1 X0.000 Y0.000') >= 0;
+          if (!body.drag.baseline) { body.drag.no_base = g7.slice(0, 60); return done(); }
+          var r5 = cv5.getBoundingClientRect();
+          var mk5 = function (t, x, y) { try { cv5.dispatchEvent(new PointerEvent(t, { bubbles: true, cancelable: true, clientX: x, clientY: y, pointerId: 7, pointerType: 'mouse', isPrimary: true, buttons: t === 'pointerup' ? 0 : 1 })); } catch (eM) { body.drag.pe_exc = String(eM); } };
+          mk5('pointerdown', r5.left + 60, r5.top + 60);
+          // the move and the release are spread over real time: while the board is connected the
+          // pen-position pushes keep redrawing the canvas between the pointer events — the old
+          // code erased the pending shift on each of those redraws — the user's complaint
+          setTimeout(function () {
+            mk5('pointermove', r5.left + 100, r5.top + 90);
+            body.drag.dispatched = true;
+            setTimeout(function () {
+              mk5('pointerup', r5.left + 100, r5.top + 90);
+              setTimeout(function () {
+                var g8 = gs5();
+                var mmv = 210 / cv5.clientWidth;
+                var fx5 = function (s) { var m = /G1 X([\\d.-]+)/.exec(s); return m ? +m[1] : null; };
+                var a5 = fx5(g7), b5 = fx5(g8);
+                body.drag.changed = g8 !== g7;
+                body.drag.mm = +mmv.toFixed(3);
+                body.drag.x_before = a5; body.drag.x_after = b5;
+                body.drag.shift_ok = a5 !== null && b5 !== null && Math.abs((b5 - a5) - 40 * mmv) < 2.0;
+                done();
+              }, 700);
+            }, 350);
+          }, 350);
+        }, 600);
+      } catch (eD) { body.drag = { exc: String(eD) }; done(); }
+    };
     var sf = function (done) { // 0.5.16 system fonts: the font dropdown must list installed families
     // (sys: options) and picking one must really convert text — no network, the file is read from disk
       try {
@@ -268,7 +316,7 @@ const SELFTEST_INIT_JS: &str = "setTimeout(function () {
         setTimeout(function () {
           var ta = sec.querySelector('textarea.gcodeedit');
           gc.textarea = !!ta;
-          if (!ta) return px(function () { iy(function () { yo(function () { sf(function () { ux(function () { rep(body); }); }); }); }); });
+          if (!ta) return px(function () { iy(function () { yo(function () { dg(function () { sf(function () { ux(function () { rep(body); }); }); }); }); }); });
           var d = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
           d.set.call(ta, 'G21\\nG90\\nG0 X10 Y10\\nG1 X50 Y30 F3000\\nG1 X10 Y10\\nM5');
           ta.dispatchEvent(new Event('input', { bubbles: true }));
@@ -278,14 +326,14 @@ const SELFTEST_INIT_JS: &str = "setTimeout(function () {
             setTimeout(function () {
               var p2 = document.getElementById('gcode');
               gc.pre_after = p2 ? p2.textContent.indexOf('G0 X10') >= 0 : false;
-              px(function () { iy(function () { yo(function () { sf(function () { ux(function () { rep(body); }); }); }); }); });
+              px(function () { iy(function () { yo(function () { dg(function () { sf(function () { ux(function () { rep(body); }); }); }); }); }); });
             }, 150);
           }, 150);
         }, 150);
         return;
       }
     } catch (e2) { body.gcheck = { exc: String(e2) }; }
-    px(function () { iy(function () { yo(function () { sf(function () { ux(function () { rep(body); }); }); }); }); });
+    px(function () { iy(function () { yo(function () { dg(function () { sf(function () { ux(function () { rep(body); }); }); }); }); }); });
   } catch (e) { rep({ exc: String(e) }); }
 }, 6000);";
 
@@ -401,6 +449,7 @@ fn main() {
                         if let Some(d) = ui.get("invy") { v["ui_invy"] = d.clone(); }
                         if let Some(d) = ui.get("sysfont") { v["ui_sysfont"] = d.clone(); }
                         if let Some(d) = ui.get("yorigin") { v["ui_yorigin"] = d.clone(); }
+                        if let Some(d) = ui.get("drag") { v["ui_drag"] = d.clone(); }
                         if let Some(d) = ui.get("unlock_btn") { v["ui_unlock_btn"] = d.clone(); }
                         if let Some(d) = ui.get("stop_btn") { v["ui_stop_btn"] = d.clone(); }
                         if let Some(d) = ui.get("dbg") { v["ipc_dbg"] = d.clone(); }
