@@ -535,6 +535,15 @@ fn selftest(g: Arc<Grbl>, proxy: EventLoopProxy<String>) {
         s.contains("G1 X0.000 Y0.000") && s.contains("G1 X30.000 Y-10.000") }).unwrap_or(false);
     r.insert("yorigin".into(), json!(b && rv));
 
+    // 0.5.22: travel speed — the option passes the API and lands on the pen-up moves:
+    // travels carry F inline, the drawing feed is re-armed after the pen down, the return
+    // home rides the travel feed too
+    let tf = call(&g, "POST", "svg", json!({"svg": "<svg xmlns='http://www.w3.org/2000/svg' width='40mm' viewBox='0 0 40 20'><path d='M5 5 L35 15'/></svg>", "options": {"travelFeed": 6000.0}}));
+    r.insert("travelfeed".into(), json!(tf.as_ref().map(|v| {
+        let s = v["gcode"].as_str().unwrap_or("");
+        s.contains("G1 X0.000 Y0.000 F6000") && s.contains("G4 P0.15\nG1 F3000\n") && s.contains("G1 X0 Y0 F6000")
+    }).unwrap_or(false)));
+
     let servo = text_r.as_ref().map(|v| { let s = v["gcode"].as_str().unwrap_or("");
         // 0.5.19 convention: M3 S255 lifts (first), M5 lowers before drawing
         s.contains("$32=0") && s.contains("G4 P")

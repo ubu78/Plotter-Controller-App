@@ -23,7 +23,7 @@ const GOOGLE_STYLES = ['regular', 'bold', 'italic', 'bolditalic']; // resolved o
 export default function SourcePanel({ t, pen, status, setLog, onConv }) {
   // Conversion options persist in localStorage: the machine's Y direction does not change
   // between sessions, so «Invert Y» must not reset on restart either.
-  const [o, setO] = useState(() => { const d = { paper: 'A4', margin: 0, scale: 100, center: false, feed: 3000, landscape: false, laserOff: true, invertY: false, yOrigin: 'top' };
+  const [o, setO] = useState(() => { const d = { paper: 'A4', margin: 0, scale: 100, center: false, feed: 3000, travelFeed: 0, landscape: false, laserOff: true, invertY: false, yOrigin: 'top' };
     try { return { ...d, ...JSON.parse(localStorage.svgopts || '{}') }; } catch (e) { return d; } });
   useEffect(() => { try { localStorage.svgopts = JSON.stringify(o); } catch (e) { /* storage blocked */ } }, [o]);
   const [tx, setTx] = useState({ text: '', font: 'Roboto', fontStyle: 'regular', size: 6, lineHeight: 1.4, markdown: false, fillMode: 'pen', fillSpacing: 0, hatchAngle: 45, startX: 0, startY: 0 });
@@ -69,6 +69,8 @@ export default function SourcePanel({ t, pen, status, setLog, onConv }) {
       <label><span>{t('margin')}</span>{num('margin', o.margin)} mm</label><label><span>{t('scale')}</span>{num('scale', o.scale)} %</label>
       <label><span>{t('center')}</span><input type="checkbox" checked={o.center} onChange={e => set('center', e.target.checked)} /></label>
       <label><span>{t('feed')}</span>{num('feed', o.feed)}</label>
+      <label title={t('travelhint')}><span>{t('travelspeed')}</span>{num('travelFeed', o.travelFeed)}</label>
+      <div className="hint">{t('travelhint')}</div>
       <label><span>{t('land')}</span><input type="checkbox" checked={o.landscape} onChange={e => set('landscape', e.target.checked)} /></label>
       <label><span>{t('laser')}</span><input type="checkbox" checked={o.laserOff} onChange={e => set('laserOff', e.target.checked)} /></label>
       <label title={t('invyhint')}><span>{t('invy')}</span><input type="checkbox" checked={o.invertY} onChange={e => set('invertY', e.target.checked)} /></label>
@@ -109,6 +111,7 @@ export default function SourcePanel({ t, pen, status, setLog, onConv }) {
       </svg></div>}
       <label><span>{t('fsize')}</span>{num('size', tx.size, st)}</label><label><span>{t('lh')}</span>{num('lineHeight', tx.lineHeight, st)}</label>
       <label><span>{t('speed')}</span>{num('feed', o.feed)} мм/мин</label>
+      <label title={t('travelhint')}><span>{t('travelspeed')}</span>{num('travelFeed', o.travelFeed)} мм/мин</label>
       <div className="stylerow" role="radiogroup" aria-label={t('style')}>
         {STYLES.map(([v, k]) => (<button key={v} className={tx.fillMode === v ? 'stybtn pri' : 'stybtn'} title={t('d' + v)} onClick={() => st('fillMode', v)}>
           {STYLE_ICONS[v]}<span>{t(k)}</span></button>))}

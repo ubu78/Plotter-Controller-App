@@ -13,6 +13,12 @@ pub struct Opt {
     pub paper: String, pub paper_w: f64, pub paper_h: f64, pub margin: f64, pub scale: f64, pub center: bool,
     pub offset_x: f64, pub offset_y: f64, pub feed: f64, pub pen_mode: String, pub z_up: f64, pub z_down: f64,
     pub z_feed: f64, pub landscape: bool, pub laser_off: bool, pub dwell: f64,
+    /// 0.5.22: separate feed for pen-up XY moves (path-to-path hops and the return home).
+    /// 0 keeps the old behavior: servo travels ride the modal drawing feed, Z-mode rapids
+    /// stay G0 at the board's $110/$111 max rates. A value > 0 turns every XY travel into
+    /// `G1 ... F<travel_feed>` (both pen modes — a feed move honors the exact number), so
+    /// travel time stops depending on the drawing feed or the board's rapid settings.
+    pub travel_feed: f64,
     /// 0.5.19: the default servo convention after the author flipped the servo horn —
     /// the ACTIVE angle (M3 S<val>) lifts the pen, M5 (spindle stop, pin low = rest) lowers it.
     /// Both stay free-form commands editable in the pen panel.
@@ -38,7 +44,7 @@ impl Default for Opt {
     fn default() -> Self {
         Opt { paper: "A4".into(), paper_w: 0.0, paper_h: 0.0, margin: 0.0, scale: 100.0, center: false, offset_x: 0.0, offset_y: 0.0,
             feed: 3000.0, pen_mode: "servo".into(), z_up: 5.0, z_down: 0.0, z_feed: 500.0, servo_down: "M5".into(), servo_up: "M3 S255".into(),
-            landscape: false, laser_off: true, dwell: 0.15, invert_y: false, y_origin: "top".into(), font: "Roboto".into(), size: 6.0, line_height: 1.4, markdown: false,
+            travel_feed: 0.0, landscape: false, laser_off: true, dwell: 0.15, invert_y: false, y_origin: "top".into(), font: "Roboto".into(), size: 6.0, line_height: 1.4, markdown: false,
             fill_mode: "pen".into(), fill_spacing: 0.0, hatch_angle: 45.0, start_x: 0.0, start_y: 0.0, page: None, keep_origin: false }
     }
 }
@@ -234,20 +240,26 @@ pub fn segs_to_conv(segs: SegPolys, unit: f64, o: &Opt, mut warn: Vec<String>) -
     // so the drawing moves carry no F. Only the Z plunge keeps its own F (z_feed), and in that
     // mode the drawing feed is restored right after the plunge. Arc commands (G2/G3) get no F.
     g.extend(["G21 G90".to_string(), format!("G1 F{}", o.feed), up.clone()]);
-    let restore = format!("G1 F{}", o.feed); // z mode only: undo the plunge's modal F{z_feed}
+    let restore = format!("G1 F{}", o.feed); // undo the plunge's F{z_feed} (z mode) or a travel F (0.5.22)
     let zmode = o.pen_mode == "z";
     // 0.5.12: travels follow program №1 — G1 at the modal drawing feed in servo mode
     // (the old G0 depended on the board's $110/$111 rapid rates and could crawl);
     // the Z mode keeps rapids for the XY travel and the vertical pen lifts.
-    let (trav, ret) = if zmode { ("G0", "G0 X0 Y0") } else { ("G1", "G1 X0 Y0") };
+    // 0.5.22: when a travel speed is set, every pen-up XY move becomes `G1 ... F{travel_feed}`
+    // in BOTH modes (a plain feed move honors the exact number on any GRBL board) and the
+    // drawing feed is re-armed right after the pen-down command — F is modal, without the
+    // restore the whole path would draw at the travel speed. The vertical Z lifts stay G0.
+    let tset = o.travel_feed > 0.0 && o.travel_feed != o.feed;
+    let (trav, ret) = if zmode && !tset { ("G0", "G0 X0 Y0") } else { ("G1", "G1 X0 Y0") };
     for p in &paths {
         let Some(first) = p.first() else { continue }; // empty path: nothing to draw
         // travel target: an arc carries its start, a line-first path starts with the anchor
         // L(p0) whose END is the polyline origin (polys_to_conv / fit always emit that anchor)
         let p0 = match first { Seg::L(p) => *p, Seg::A { s, .. } => *s };
-        g.push(format!("{trav} X{:.3} Y{:.3}", p0[0], p0[1]));
+        if tset { g.push(format!("{trav} X{:.3} Y{:.3} F{}", p0[0], p0[1], o.travel_feed)); }
+        else { g.push(format!("{trav} X{:.3} Y{:.3}", p0[0], p0[1])); }
         g.push(down.clone());
-        if zmode { g.push(restore.clone()); }
+        if zmode || tset { g.push(restore.clone()); }
         let mut cur = p0;
         for seg in p {
             match seg {
@@ -269,7 +281,7 @@ pub fn segs_to_conv(segs: SegPolys, unit: f64, o: &Opt, mut warn: Vec<String>) -
         }
         g.push(up.clone());
     }
-    g.push(ret.into());
+    g.push(if tset { format!("{ret} F{}", o.travel_feed) } else { ret.into() }); // the return home is a travel too
     Conv { gcode: g.join("\n"), warnings: warn, paths: disp, bbox: Some(bb), paper: [pw, ph], pages: None, page: None }
 }
 
@@ -341,6 +353,56 @@ mod tests {
                 assert!(!l.contains('F'), "motion line must be F-free: {l}");
             }
         }
+    }
+
+    #[test]
+    fn travel_feed_is_a_separate_speed() {
+        // 0.5.22: pen-up moves run at their own feed — travels carry F inline, the modal
+        // drawing feed is re-armed after every pen down, the return home rides F too.
+        let o = Opt { travel_feed: 6000.0, ..Default::default() };
+        let c = polys_to_conv(vec![vec![[0.0, 0.0], [10.0, 0.0]], vec![[20.0, 0.0], [30.0, 0.0]]], 1.0, &o, vec![]);
+        assert!(c.gcode.contains("G1 X0.000 Y0.000 F6000"), "first travel at the travel feed: {}", c.gcode);
+        assert!(c.gcode.contains("G1 X20.000 Y0.000 F6000"), "travel between paths at the travel feed: {}", c.gcode);
+        let feeds: Vec<&str> = c.gcode.lines().filter(|l| *l == "G1 F3000").collect();
+        assert_eq!(feeds.len(), 3, "top feed line + one re-arm after each pen down: {}", c.gcode);
+        assert!(c.gcode.contains("G1 X0 Y0 F6000"), "return home at the travel feed: {}", c.gcode);
+        // drawing moves themselves must stay F-free (the re-armed modal feed drives them)
+        for l in c.gcode.lines() {
+            if (l.starts_with("G1 X") && !l.ends_with("F6000")) || l.starts_with("G2 ") || l.starts_with("G3 ") {
+                assert!(!l.contains('F'), "drawing line must be F-free: {l}");
+            }
+        }
+    }
+
+    #[test]
+    fn zero_travel_feed_keeps_the_old_output() {
+        // 0 = backward compatible: no F on travel lines, no extra restore lines
+        let c = polys_to_conv(vec![vec![[0.0, 0.0], [10.0, 0.0]], vec![[20.0, 0.0], [30.0, 0.0]]], 1.0, &Opt::default(), vec![]);
+        assert!(c.gcode.contains("G1 X20.000 Y0.000"), "travel rides the modal drawing feed");
+        assert!(c.gcode.contains("G1 X0 Y0"), "plain return home");
+        assert!(!c.gcode.contains("F6000"), "no travel feed anywhere: {}", c.gcode);
+    }
+
+    #[test]
+    fn z_mode_travel_feed_switches_rapids_to_feed_moves() {
+        // with a travel speed set even the Z mode travels as G1 F (an exact number on any
+        // board) — only the vertical pen lifts stay G0 rapids
+        let o = Opt { pen_mode: "z".into(), travel_feed: 6000.0, ..Default::default() };
+        let c = polys_to_conv(vec![vec![[0.0, 0.0], [10.0, 0.0]]], 1.0, &o, vec![]);
+        assert!(c.gcode.contains("G1 X0.000 Y0.000 F6000"), "XY travel at the set speed in z mode: {}", c.gcode);
+        assert!(!c.gcode.contains("G0 X"), "no G0 XY travels once the travel speed is set: {}", c.gcode);
+        assert!(c.gcode.contains("G0 Z5"), "vertical pen lift stays a rapid: {}", c.gcode);
+    }
+
+    #[test]
+    fn travel_feed_equal_to_draw_feed_is_free() {
+        // setting the same number as the drawing feed must not add any extra lines
+        let o = Opt { travel_feed: 3000.0, ..Default::default() };
+        let c = polys_to_conv(vec![vec![[0.0, 0.0], [10.0, 0.0]]], 1.0, &o, vec![]);
+        assert!(!c.gcode.contains("F6000"));
+        let feeds: Vec<&str> = c.gcode.lines().filter(|l| *l == "G1 F3000").collect();
+        assert_eq!(feeds.len(), 1, "only the single top feed line: {}", c.gcode);
+        assert!(c.gcode.contains("G1 X0 Y0"), "plain return home");
     }
 
     #[test]
