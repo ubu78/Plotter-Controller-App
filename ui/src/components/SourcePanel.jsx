@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import Preview from './Preview.jsx';
 const b64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 32768) s += String.fromCharCode.apply(null, u8.subarray(i, i + 32768)); return btoa(s); };
@@ -23,14 +23,28 @@ const GOOGLE_STYLES = ['regular', 'bold', 'italic', 'bolditalic']; // resolved o
 export default function SourcePanel({ t, pen, status, setLog, onConv }) {
   // Conversion options persist in localStorage: the machine's Y direction does not change
   // between sessions, so «Invert Y» must not reset on restart either.
-  const [o, setO] = useState(() => { const d = { paper: 'A4', margin: 0, scale: 100, center: false, feed: 3000, travelFeed: 0, landscape: false, laserOff: true, invertY: false, yOrigin: 'top' };
-    try { return { ...d, ...JSON.parse(localStorage.svgopts || '{}') }; } catch (e) { return d; } });
+  const [o, setO] = useState(() => { const d = { paper: 'A4', margin: 0, marginL: 0, marginR: 0, marginT: 0, marginB: 0, scale: 100, center: false, feed: 3000, travelFeed: 0, landscape: false, laserOff: true, invertY: false, yOrigin: 'top' };
+    try { const s = { ...d, ...JSON.parse(localStorage.svgopts || '{}') };
+      // 0.5.22 migration: the single «Поле» became four per-side margins (left/right/top/bottom)
+      if (s.marginL === undefined && +(s.margin || 0) > 0) { s.marginL = s.marginR = s.marginT = s.marginB = +s.margin; s.margin = 0; }
+      return s; } catch (e) { return d; } });
   useEffect(() => { try { localStorage.svgopts = JSON.stringify(o); } catch (e) { /* storage blocked */ } }, [o]);
   const [tx, setTx] = useState({ text: '', font: 'Roboto', fontStyle: 'regular', size: 6, lineHeight: 1.4, markdown: false, fillMode: 'pen', fillSpacing: 0, hatchAngle: 45, startX: 0, startY: 0 });
   const [fonts, setFonts] = useState({ google: [], system: [] }); const [svg, setSvg] = useState('');
   const [fp, setFp] = useState(null); const fpSeq = useRef(0);
   const [mode, setMode] = useState('svg'); const [off, setOff] = useState([0, 0]); const [page, setPage] = useState(0); const [conv, setConv] = useState(null); const [pick, setPick] = useState(false); const [pdf, setPdf] = useState(''); const [pdfDraw, setPdfDraw] = useState(true);
   const set = (k, v) => setO(p => ({ ...p, [k]: v })); const st = (k, v) => setTx(p => ({ ...p, [k]: v }));
+  // 0.5.22: sheet size of the SELECTED format — the preview frame/grid follow it even before
+  // the first conversion. Mirrors the backend cap (Letter is limited to A4) and landscape swap.
+  // Memoized: a fresh array each render would reset the preview's pending drag shift.
+  const sheet = useMemo(() => { let w = o.paper === 'A5' ? 148 : o.paper === 'Letter' ? 215.9 : 210,
+    h = o.paper === 'A5' ? 210 : o.paper === 'Letter' ? 279.4 : 297;
+    if (w > 210 || h > 297) { w = Math.min(w, 210); h = Math.min(h, 297); }
+    return o.landscape ? [h, w] : [w, h]; }, [o.paper, o.landscape]);
+  // effective preview margins: the four per-side values win over the legacy single field
+  const mg = useMemo(() => ((o.marginL || 0) > 0 || (o.marginR || 0) > 0 || (o.marginT || 0) > 0 || (o.marginB || 0) > 0)
+    ? [o.marginL || 0, o.marginR || 0, o.marginT || 0, o.marginB || 0]
+    : [o.margin || 0, o.margin || 0, o.margin || 0, o.margin || 0], [o.marginL, o.marginR, o.marginT, o.marginB, o.margin]);
   const SNAME = { regular: t('streg'), bold: t('stbold'), italic: t('stital'), bolditalic: t('stbi') };
   const fam = fonts.system.find(f => f.value === tx.font); // selected family is a system font?
   // Google fonts + every family installed on the system; ↻ rescans after installing new fonts
@@ -66,7 +80,14 @@ export default function SourcePanel({ t, pen, status, setLog, onConv }) {
     <section><h2>{t('svg')}</h2>
       <input type="file" accept=".svg,image/svg+xml" onChange={async e => { const s = await e.target.files[0].text(); setSvg(s); setMode('svg'); setOff([0, 0]); run('svg', [0, 0], 0, s); }} />
       <label><span>{t('paper')}</span><select value={o.paper} onChange={e => set('paper', e.target.value)}><option>A4</option><option>A5</option><option>Letter</option></select></label>
-      <label><span>{t('margin')}</span>{num('margin', o.margin)} mm</label><label><span>{t('scale')}</span>{num('scale', o.scale)} %</label>
+      <div className="margins">
+        <label><span>{t('mgl')}</span>{num('marginL', o.marginL)} мм</label>
+        <label><span>{t('mgr')}</span>{num('marginR', o.marginR)} мм</label>
+        <label><span>{t('mgt')}</span>{num('marginT', o.marginT)} мм</label>
+        <label><span>{t('mgb')}</span>{num('marginB', o.marginB)} мм</label>
+      </div>
+      <div className="hint">{t('marginhint')}</div>
+      <label><span>{t('scale')}</span>{num('scale', o.scale)} %</label>
       <label><span>{t('center')}</span><input type="checkbox" checked={o.center} onChange={e => set('center', e.target.checked)} /></label>
       <label><span>{t('feed')}</span>{num('feed', o.feed)}</label>
       <label title={t('travelhint')}><span>{t('travelspeed')}</span>{num('travelFeed', o.travelFeed)}</label>
@@ -133,7 +154,7 @@ export default function SourcePanel({ t, pen, status, setLog, onConv }) {
         <button onClick={() => mode !== 'svg' && page > 0 && run(mode, off, page - 1)}>◀</button><b>{conv?.pages ? `${page + 1}/${conv.pages}` : '–'}</b>
         <button onClick={() => mode !== 'svg' && conv && page < conv.pages - 1 && run(mode, off, page + 1)}>▶</button></div>
       <div className="warn">{t('drag')}</div></section>
-    <section><h2>{t('preview')}</h2><Preview conv={conv} pos={status.connected ? status.wpos : null} pick={pick} yOrigin={mode === 'svg' || mode === 'pdf' ? (o.yOrigin || 'top') : 'top'}
+    <section><h2>{t('preview')}</h2><Preview conv={conv} pos={status.connected ? status.wpos : null} pick={pick} yOrigin={mode === 'svg' || mode === 'pdf' ? (o.yOrigin || 'top') : 'top'} sheet={sheet} margins={mg}
       onPick={(x, y) => { const n = { ...tx, startX: +x.toFixed(1), startY: +y.toFixed(1) }; setTx(n); setPick(false); setMode('text'); setPage(0); run('text', off, 0, svg, n); }}
       onDrop={(dx, dy) => { if (mode === 'text') { const n = { ...tx, startX: +Math.max(0, tx.startX + dx).toFixed(1), startY: +Math.max(0, tx.startY + dy).toFixed(1) }; setTx(n); run('text', off, page, svg, n); }
         else { const n = [off[0] + dx, off[1] + dy]; setOff(n); run(mode, n); } }} /></section></>);

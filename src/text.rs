@@ -262,7 +262,10 @@ pub fn text_to_conv(text: &str, o: &Opt) -> Result<Conv, String> {
     let adv = |c: char| face.glyph_index(c).and_then(|g| face.glyph_hor_advance(g)).unwrap_or(0) as f64 / upm * sz;
     let width = |s: &str| s.chars().map(adv).sum::<f64>();
 
-    let maxw = pw - o.start_x - o.margin;
+    // 0.5.22: per-side margins reserve space: right bounds the line width, bottom the page
+    // height (legacy single margin behaved exactly the same way)
+    let (_, mr, _, mb) = crate::gcode::margins(o);
+    let maxw = pw - o.start_x - mr;
     let mut lines: Vec<String> = vec![];
     for para in text.split('\n') {
         let mut line = String::new();
@@ -273,7 +276,7 @@ pub fn text_to_conv(text: &str, o: &Opt) -> Result<Conv, String> {
         lines.push(line);
     }
     let step = sz * o.line_height;
-    let max_lines = (((ph - o.start_y - o.margin - sz) / step).floor() as i64 + 1).max(1) as usize;
+    let max_lines = (((ph - o.start_y - mb - sz) / step).floor() as i64 + 1).max(1) as usize;
     let pages = ((lines.len() + max_lines - 1) / max_lines).max(1);
     let page = o.page.unwrap_or(0).min(pages - 1);
     if o.page.is_some() { lines = lines.into_iter().skip(page * max_lines).take(max_lines).collect(); }
@@ -310,7 +313,7 @@ pub fn text_to_conv(text: &str, o: &Opt) -> Result<Conv, String> {
             x += adv(ch);
         }
     }
-    let mut o2 = o.clone(); o2.keep_origin = true; o2.margin = 0.0; o2.center = false; o2.scale = 100.0; o2.offset_x = o.start_x; o2.offset_y = o.start_y;
+    let mut o2 = o.clone(); o2.keep_origin = true; o2.margin = 0.0; o2.margin_l = 0.0; o2.margin_r = 0.0; o2.margin_t = 0.0; o2.margin_b = 0.0; o2.center = false; o2.scale = 100.0; o2.offset_x = o.start_x; o2.offset_y = o.start_y;
     o2.feed *= feed_mult(fm);
     if polys.is_empty() { warn.push("Nothing to draw".into()); }
     let mut c = polys_to_conv(polys, 1.0, &o2, warn); c.pages = Some(pages); c.page = Some(page);

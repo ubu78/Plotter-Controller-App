@@ -6,6 +6,7 @@ header h1{font-size:16px;margin:0;flex:1}main{display:grid;grid-template-columns
 section{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:12px}
 h2{font-size:13px;margin:0 0 8px;color:var(--mu);text-transform:uppercase;letter-spacing:.04em}
 label{display:flex;gap:6px;align-items:center;margin:4px 0}label span{min-width:90px;color:var(--mu)}
+.margins{display:grid;grid-template-columns:1fr 1fr;gap:0 10px;margin:4px 0}.margins label span{min-width:auto;color:var(--mu)}
 input,select,button,textarea{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:5px 8px}
 input[type=number]{width:80px}button{cursor:pointer}button:hover{border-color:var(--ac)}
 button:disabled{opacity:.45;cursor:not-allowed}button:disabled:hover{border-color:var(--bd)}

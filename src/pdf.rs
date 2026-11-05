@@ -32,9 +32,11 @@ pub fn pdf_to_conv(buf: &[u8], o: &Opt, dpi: f64) -> Result<Conv, String> {
     o2.landscape = o.landscape || pw_mm > ph_mm; // follow the page orientation unless forced
     let mut warn = vec![];
     let (sw, sh) = crate::gcode::paper(&o2, &mut warn);
-    let f = ((sw - o.start_x - o.margin) / pw_mm).min((sh - o.start_y - o.margin) / ph_mm).min(1.0);
+    // 0.5.22: right/bottom margins reserve space for the page fit (the legacy single margin did)
+    let (_, mr, _, mb) = crate::gcode::margins(o);
+    let f = ((sw - o.start_x - mr) / pw_mm).min((sh - o.start_y - mb) / ph_mm).min(1.0);
     if f < 0.995 { warn.push(format!("Page scaled to {:.0}% to fit the sheet", f * 100.0)); }
-    o2.keep_origin = true; o2.margin = 0.0; o2.center = false; o2.scale = 100.0 * f;
+    o2.keep_origin = true; o2.margin = 0.0; o2.margin_l = 0.0; o2.margin_r = 0.0; o2.margin_t = 0.0; o2.margin_b = 0.0; o2.center = false; o2.scale = 100.0 * f;
     o2.offset_x = o.start_x + o.offset_x; o2.offset_y = o.start_y + o.offset_y;
     let mut c = polys_to_conv(paths, 1.0, &o2, warn);
     c.pages = Some(n); c.page = Some(idx);

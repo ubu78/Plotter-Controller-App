@@ -188,6 +188,43 @@ const SELFTEST_INIT_JS: &str = "setTimeout(function () {
         }, 150);
       } catch (e9) { body.yorigin = { exc: String(e9) }; done(); }
     };
+    var mg = function (done) { // 0.5.22 sheet margins: 15 in the LEFT margin field must shift
+    // the drawing to X15 in the G-code; zeroing the field restores the origin placement.
+    // The first number input inside .margins is Left (fields are rendered L, R, T, B).
+      try {
+        var fi6 = document.querySelector('input[accept*=svg]');
+        body.margins = { input: !!fi6 };
+        if (!fi6) { body.margins.skip = 'no-input'; return done(); }
+        var sec6 = fi6.closest('section');
+        var mlin = null, cv6 = null;
+        if (sec6) {
+          mlin = sec6.querySelector('.margins input[type=number]');
+          sec6.querySelectorAll('button').forEach(function (x) { if (!cv6 && /конверт|convert|konverteeri/i.test(x.textContent)) cv6 = x; });
+        }
+        body.margins.left_input = !!mlin; body.margins.conv_btn = !!cv6;
+        if (!mlin || !cv6) return done();
+        var d6 = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+        d6.set.call(mlin, '15');
+        mlin.dispatchEvent(new Event('input', { bubbles: true }));
+        setTimeout(function () {
+          cv6.click();
+          setTimeout(function () {
+            var g9 = (document.getElementById('gcode') || {}).textContent || '';
+            body.margins.shifted = g9.indexOf('G1 X15.000 Y0.000') >= 0;
+            d6.set.call(mlin, '0');
+            mlin.dispatchEvent(new Event('input', { bubbles: true }));
+            setTimeout(function () {
+              cv6.click();
+              setTimeout(function () {
+                var g10 = (document.getElementById('gcode') || {}).textContent || '';
+                body.margins.restored = g10.indexOf('G1 X0.000 Y0.000') >= 0 && g10.indexOf('X15.000') < 0;
+                done();
+              }, 450);
+            }, 150);
+          }, 450);
+        }, 150);
+      } catch (eM) { body.margins = { exc: String(eM) }; done(); }
+    };
     var dg = function (done) { // 0.5.21 drag: a synthetic pointer drag on the sheet preview
     // must shift the drawing live and the reconversion must bake the offset into the G-code
     // (the first G1 X grows by ~40px * mm-per-screen-pixel). Verifies the whole loop the user
@@ -316,7 +353,7 @@ const SELFTEST_INIT_JS: &str = "setTimeout(function () {
         setTimeout(function () {
           var ta = sec.querySelector('textarea.gcodeedit');
           gc.textarea = !!ta;
-          if (!ta) return px(function () { iy(function () { yo(function () { dg(function () { sf(function () { ux(function () { rep(body); }); }); }); }); }); });
+          if (!ta) return px(function () { iy(function () { yo(function () { mg(function () { dg(function () { sf(function () { ux(function () { rep(body); }); }); }); }); }); }); });
           var d = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
           d.set.call(ta, 'G21\\nG90\\nG0 X10 Y10\\nG1 X50 Y30 F3000\\nG1 X10 Y10\\nM5');
           ta.dispatchEvent(new Event('input', { bubbles: true }));
@@ -326,14 +363,14 @@ const SELFTEST_INIT_JS: &str = "setTimeout(function () {
             setTimeout(function () {
               var p2 = document.getElementById('gcode');
               gc.pre_after = p2 ? p2.textContent.indexOf('G0 X10') >= 0 : false;
-              px(function () { iy(function () { yo(function () { dg(function () { sf(function () { ux(function () { rep(body); }); }); }); }); }); });
+              px(function () { iy(function () { yo(function () { mg(function () { dg(function () { sf(function () { ux(function () { rep(body); }); }); }); }); }); }); });
             }, 150);
           }, 150);
         }, 150);
         return;
       }
     } catch (e2) { body.gcheck = { exc: String(e2) }; }
-    px(function () { iy(function () { yo(function () { dg(function () { sf(function () { ux(function () { rep(body); }); }); }); }); }); });
+    px(function () { iy(function () { yo(function () { mg(function () { dg(function () { sf(function () { ux(function () { rep(body); }); }); }); }); }); }); });
   } catch (e) { rep({ exc: String(e) }); }
 }, 6000);";
 
@@ -371,6 +408,12 @@ fn main() {
         .with_url(INDEX)
         .with_initialization_script(INIT_JS);
     if selftest_mode { builder = builder.with_initialization_script(SELFTEST_INIT_JS); }
+    // screenshot/demo aid: pre-seed the sheet margins so the preview shows the dashed
+    // printable-area rectangle (PLOTTER_DEMO_MARGINS=1 shot_0522b.sh; not used normally)
+    if std::env::var("PLOTTER_DEMO_MARGINS").as_deref() == Ok("1") {
+        builder = builder.with_initialization_script(
+            "try{var s=JSON.parse(localStorage.svgopts||'{}');s.marginL=15;s.marginT=10;localStorage.svgopts=JSON.stringify(s);}catch(e){}");
+    }
     let webview = builder
         .with_custom_protocol("plotter".into(), move |_, req| {
             let p = req.uri().path().trim_start_matches('/');
@@ -449,6 +492,7 @@ fn main() {
                         if let Some(d) = ui.get("invy") { v["ui_invy"] = d.clone(); }
                         if let Some(d) = ui.get("sysfont") { v["ui_sysfont"] = d.clone(); }
                         if let Some(d) = ui.get("yorigin") { v["ui_yorigin"] = d.clone(); }
+                        if let Some(d) = ui.get("margins") { v["ui_margins"] = d.clone(); }
                         if let Some(d) = ui.get("drag") { v["ui_drag"] = d.clone(); }
                         if let Some(d) = ui.get("unlock_btn") { v["ui_unlock_btn"] = d.clone(); }
                         if let Some(d) = ui.get("stop_btn") { v["ui_stop_btn"] = d.clone(); }
@@ -542,6 +586,14 @@ fn selftest(g: Arc<Grbl>, proxy: EventLoopProxy<String>) {
     r.insert("travelfeed".into(), json!(tf.as_ref().map(|v| {
         let s = v["gcode"].as_str().unwrap_or("");
         s.contains("G1 X0.000 Y0.000 F6000") && s.contains("G4 P0.15\nG1 F3000\n") && s.contains("G1 X0 Y0 F6000")
+    }).unwrap_or(false)));
+
+    // 0.5.22: sheet margins — left/top shift the normalized drawing into the printable area;
+    // the diagonal M5 5 L35 15 lands at (marginL, marginT)
+    let mg = call(&g, "POST", "svg", json!({"svg": "<svg xmlns='http://www.w3.org/2000/svg' width='40mm' viewBox='0 0 40 20'><path d='M5 5 L35 15'/></svg>", "options": {"marginL": 15.0, "marginT": 8.0}}));
+    r.insert("margins".into(), json!(mg.as_ref().map(|v| {
+        let s = v["gcode"].as_str().unwrap_or("");
+        s.contains("G1 X15.000 Y8.000") && s.contains("G1 X45.000 Y18.000")
     }).unwrap_or(false)));
 
     let servo = text_r.as_ref().map(|v| { let s = v["gcode"].as_str().unwrap_or("");

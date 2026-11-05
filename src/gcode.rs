@@ -11,6 +11,10 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase", default)]
 pub struct Opt {
     pub paper: String, pub paper_w: f64, pub paper_h: f64, pub margin: f64, pub scale: f64, pub center: bool,
+    /// 0.5.22: per-side sheet margins in mm — left, right, top, bottom. While all four are
+    /// zero the legacy single `margin` applies to every side (old files / API compatibility).
+    /// left/top shift the drawing, right/bottom bound the printable area for auto-scale.
+    pub margin_l: f64, pub margin_r: f64, pub margin_t: f64, pub margin_b: f64,
     pub offset_x: f64, pub offset_y: f64, pub feed: f64, pub pen_mode: String, pub z_up: f64, pub z_down: f64,
     pub z_feed: f64, pub landscape: bool, pub laser_off: bool, pub dwell: f64,
     /// 0.5.22: separate feed for pen-up XY moves (path-to-path hops and the return home).
@@ -42,7 +46,7 @@ pub struct Opt {
 }
 impl Default for Opt {
     fn default() -> Self {
-        Opt { paper: "A4".into(), paper_w: 0.0, paper_h: 0.0, margin: 0.0, scale: 100.0, center: false, offset_x: 0.0, offset_y: 0.0,
+        Opt { paper: "A4".into(), paper_w: 0.0, paper_h: 0.0, margin: 0.0, margin_l: 0.0, margin_r: 0.0, margin_t: 0.0, margin_b: 0.0, scale: 100.0, center: false, offset_x: 0.0, offset_y: 0.0,
             feed: 3000.0, pen_mode: "servo".into(), z_up: 5.0, z_down: 0.0, z_feed: 500.0, servo_down: "M5".into(), servo_up: "M3 S255".into(),
             travel_feed: 0.0, landscape: false, laser_off: true, dwell: 0.15, invert_y: false, y_origin: "top".into(), font: "Roboto".into(), size: 6.0, line_height: 1.4, markdown: false,
             fill_mode: "pen".into(), fill_spacing: 0.0, hatch_angle: 45.0, start_x: 0.0, start_y: 0.0, page: None, keep_origin: false }
@@ -76,6 +80,14 @@ pub fn paper(o: &Opt, warn: &mut Vec<String>) -> (f64, f64) {
     if w > 210.0 || h > 297.0 { warn.push("Paper limited to A4 (210×297 mm)".into()); w = w.min(210.0); h = h.min(297.0); }
     if o.landscape { std::mem::swap(&mut w, &mut h); }
     (w, h)
+}
+
+/// Effective per-side margins (left, right, top, bottom) in mm. 0.5.22: the four per-side
+/// values rule as soon as any of them is set; a legacy single `margin` spreads over all four.
+pub fn margins(o: &Opt) -> (f64, f64, f64, f64) {
+    if o.margin_l > 0.0 || o.margin_r > 0.0 || o.margin_t > 0.0 || o.margin_b > 0.0 {
+        (o.margin_l, o.margin_r, o.margin_t, o.margin_b)
+    } else { (o.margin, o.margin, o.margin, o.margin) }
 }
 
 pub fn bbox(p: &Polys) -> [f64; 4] {
@@ -167,13 +179,18 @@ pub fn segs_to_conv(segs: SegPolys, unit: f64, o: &Opt, mut warn: Vec<String>) -
     let mut s = unit * o.scale / 100.0;
     if o.keep_origin { x0 = 0.0; y0 = 0.0; } // layout coordinates are already in mm from the block origin
     let (mut w, mut h) = ((x1 - x0) * s, (y1 - y0) * s);
-    let (aw, ah) = (pw - 2.0 * o.margin, ph - 2.0 * o.margin);
+    // 0.5.22: per-side margins bound the printable area; a degenerate area (margins >= sheet)
+    // is clamped so the auto-scale keeps a sane factor instead of flipping sign
+    let (ml, mr, mt, mb) = margins(o);
+    if ml + mr >= pw || mt + mb >= ph { warn.push("Margins leave no room on the sheet".into()); }
+    let (aw, ah) = ((pw - ml - mr).max(1.0), (ph - mt - mb).max(1.0));
     if !o.keep_origin && (w > aw || h > ah) {
         let f = (aw / w).min(ah / h); s *= f; w *= f; h *= f;
         warn.push(format!("Auto-scaled to {:.0}% to fit paper", f * 100.0));
     }
-    let ox = if o.center { (pw - w) / 2.0 } else { o.margin } + o.offset_x;
-    let oy = if o.center { (ph - h) / 2.0 } else { o.margin } + o.offset_y;
+    // centered between the margins (with uniform margins this equals the old full-sheet center)
+    let ox = if o.center { ml + (aw - w) / 2.0 } else { ml } + o.offset_x;
+    let oy = if o.center { mt + (ah - h) / 2.0 } else { mt } + o.offset_y;
     let tf = |v: [f64; 2]| [(v[0] - x0) * s + ox, (v[1] - y0) * s + oy];
     // transform: all three arc points move together (uniform scale + translation, no flip)
     let paths: SegPolys = segs.into_iter().map(|p| p.into_iter().map(|seg| match seg {
@@ -403,6 +420,51 @@ mod tests {
         let feeds: Vec<&str> = c.gcode.lines().filter(|l| *l == "G1 F3000").collect();
         assert_eq!(feeds.len(), 1, "only the single top feed line: {}", c.gcode);
         assert!(c.gcode.contains("G1 X0 Y0"), "plain return home");
+    }
+
+    #[test]
+    fn per_side_margins_shift_the_drawing() {
+        // 0.5.22: left/top margins move the normalized drawing into the printable area
+        let o = Opt { margin_l: 15.0, margin_t: 8.0, ..Default::default() };
+        let c = polys_to_conv(vec![vec![[5.0, 5.0], [35.0, 15.0]]], 1.0, &o, vec![]);
+        assert!(c.gcode.contains("G1 X15.000 Y8.000"), "first travel at (ml, mt): {}", c.gcode);
+        assert!(c.gcode.contains("G1 X45.000 Y18.000"), "second point shifted too: {}", c.gcode);
+        assert!(!c.warnings.iter().any(|s| s.contains("exceeds")));
+    }
+
+    #[test]
+    fn margins_center_between_the_sides() {
+        // A4, left 20 right 40 -> printable 150 wide; a 100 mm line is centered inside it
+        let o = Opt { margin_l: 20.0, margin_r: 40.0, center: true, ..Default::default() };
+        let c = polys_to_conv(vec![vec![[0.0, 0.0], [100.0, 0.0]]], 1.0, &o, vec![]);
+        assert!(c.gcode.contains("G1 X45.000 Y148.500"), "start at ml + (aw-w)/2 (center also fits Y): {}", c.gcode);
+        assert!(c.gcode.contains("G1 X145.000 Y148.500"), "end leaves the same gap to the right margin");
+    }
+
+    #[test]
+    fn right_bottom_margins_bound_autoscale() {
+        // 200 mm wide drawing into 210-30=180 -> 90%; the right/bottom margins act as bounds
+        let o = Opt { margin_r: 30.0, margin_b: 15.0, ..Default::default() };
+        let c = polys_to_conv(vec![vec![[0.0, 0.0], [200.0, 0.0], [200.0, 100.0]]], 1.0, &o, vec![]);
+        assert!(c.warnings.iter().any(|s| s.contains("Auto-scaled")));
+        assert!(c.gcode.contains("G1 X180.000 Y0.000"), "max X = sheet - right margin: {}", c.gcode);
+    }
+
+    #[test]
+    fn legacy_margin_equals_four_equal_sides() {
+        let poly = vec![vec![[0.0, 0.0], [50.0, 20.0]]];
+        let a = polys_to_conv(poly.clone(), 1.0, &Opt { margin: 12.0, ..Default::default() }, vec![]);
+        let b = polys_to_conv(poly, 1.0, &Opt { margin_l: 12.0, margin_r: 12.0, margin_t: 12.0, margin_b: 12.0, ..Default::default() }, vec![]);
+        assert_eq!(a.gcode, b.gcode, "legacy single margin must behave like four equal sides");
+        assert!(a.gcode.contains("G1 X12.000 Y12.000"));
+    }
+
+    #[test]
+    fn margins_bigger_than_the_sheet_warn_and_clamp() {
+        let o = Opt { margin_l: 300.0, margin_r: 300.0, ..Default::default() };
+        let c = polys_to_conv(vec![vec![[0.0, 0.0], [10.0, 10.0]]], 1.0, &o, vec![]);
+        assert!(c.warnings.iter().any(|s| s.contains("no room")), "warning present: {:?}", c.warnings);
+        assert!(!c.gcode.is_empty(), "still emits G-code, no panic");
     }
 
     #[test]
