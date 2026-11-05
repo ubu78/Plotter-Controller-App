@@ -30,7 +30,8 @@ const INIT_JS: &str = "window.__pushq = window.__pushq || []; window.__push = fu
 // then count '> $X' lines in the console log. 0.5.9 shipped a GET/POST route mismatch that made
 // the button silently do nothing while the Rust-side POST selftest stayed green — this UI half
 // exists so that class of bug can never pass again.
-const SELFTEST_INIT_JS: &str = "setTimeout(function () {
+const SELFTEST_INIT_JS: &str = "try { localStorage.removeItem('svgopts'); } catch (e) {} // hermetic: conversion options persisted by previous runs (margins/scale typed for a screenshot) must not shift the expected coordinates
+setTimeout(function () {
   var rep = function (body) { try { window.ipc.postMessage(JSON.stringify({ id: 888888, path: 'selftest_report', method: 'POST', body: body })); } catch (e) {} };
   try {
     var s = []; document.querySelectorAll('select').forEach(function (e) { s.push(e.options.length); });
