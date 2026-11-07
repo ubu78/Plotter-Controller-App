@@ -50,14 +50,16 @@ export default function App() {
         {t('abouttext').split('\n').map((l, i) => <p key={i}>{l}</p>)}
       </div>}
       <ConnectionPanel t={t} status={status} send={send} gcode={gcode} setLog={setLog} />
-      {/* 0.5.24: the ready G-code card moved right under Connection (grid area in style.css):
-          the conversion result stays on screen next to the plot controls instead of a full-width
-          row at the very bottom. */}
+      {/* 0.5.25: the DOM order follows the approved figcraft mockup (the 4-column grid areas
+          in style.css then place every card exactly there): col 1 = Connection / Manual / Pen /
+          GRBL settings, col 2 = Ready-made G-code with the conversion result under it,
+          col 3 = Text, col 4 = SVG, the big 2x2 sheet preview in the middle, console at the
+          bottom. SourcePanel renders Text, SVG and the preview in that reading order. */}
+      <PastePanel t={t} setGcode={setGcode} setLog={setLog} />
       <GcodePanel t={t} gcode={gcode} setGcode={setGcode} setLog={setLog} />
+      <SourcePanel t={t} pen={pen} status={status} setLog={setLog} onConv={r => setGcode(r.gcode || '')} />
       <ManualPanel t={t} send={send} pen={pen} status={status} />
       <PenPanel t={t} pen={pen} setPen={setPen} send={send} />
-      <SourcePanel t={t} pen={pen} status={status} setLog={setLog} onConv={r => setGcode(r.gcode || '')} />
-      <PastePanel t={t} setGcode={setGcode} setLog={setLog} />
       <SettingsPanel t={t} lang={lang} values={values} send={send} />
       <ConsolePanel t={t} log={log.map(l => decorate(lang, l))} send={send} />
     </main></>);

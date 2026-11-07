@@ -77,37 +77,6 @@ export default function SourcePanel({ t, pen, status, setLog, onConv }) {
   };
   const num = (k, v, f = set) => <input type="number" value={v} onChange={e => f(k, +e.target.value)} />;
   return (<>
-    <section className="p-svg"><h2>{t('svg')}</h2>
-      <input type="file" accept=".svg,image/svg+xml" onChange={async e => { const s = await e.target.files[0].text(); setSvg(s); setMode('svg'); setOff([0, 0]); run('svg', [0, 0], 0, s); }} />
-      <label><span>{t('paper')}</span><select value={o.paper} onChange={e => set('paper', e.target.value)}><option>A4</option><option>A5</option><option>Letter</option></select></label>
-      <div className="margins">
-        <label><span>{t('mgl')}</span>{num('marginL', o.marginL)} мм</label>
-        <label><span>{t('mgr')}</span>{num('marginR', o.marginR)} мм</label>
-        <label><span>{t('mgt')}</span>{num('marginT', o.marginT)} мм</label>
-        <label><span>{t('mgb')}</span>{num('marginB', o.marginB)} мм</label>
-      </div>
-      <div className="hint">{t('marginhint')}</div>
-      <label><span>{t('scale')}</span>{num('scale', o.scale)} %</label>
-      <label><span>{t('center')}</span><input type="checkbox" checked={o.center} onChange={e => set('center', e.target.checked)} /></label>
-      <label><span>{t('feed')}</span>{num('feed', o.feed)}</label>
-      <label title={t('travelhint')}><span>{t('travelspeed')}</span>{num('travelFeed', o.travelFeed)}</label>
-      <div className="hint">{t('travelhint')}</div>
-      <label><span>{t('land')}</span><input type="checkbox" checked={o.landscape} onChange={e => set('landscape', e.target.checked)} /></label>
-      <label><span>{t('laser')}</span><input type="checkbox" checked={o.laserOff} onChange={e => set('laserOff', e.target.checked)} /></label>
-      <label title={t('invyhint')}><span>{t('invy')}</span><input type="checkbox" checked={o.invertY} onChange={e => set('invertY', e.target.checked)} /></label>
-      <div className="hint">{t('invyhint')}</div>
-      <label title={t('yorhint')}><span>{t('yorigin')}</span>
-        <select value={o.yOrigin || 'top'} onChange={e => set('yOrigin', e.target.value)}>
-          <option value="top">{t('yotop')}</option>
-          <option value="bottom">{t('yobottom')}</option>
-          <option value="reverse">{t('yoreverse')}</option>
-        </select></label>
-      <div className="hint">{t('yorhint')}</div>
-      <div className="row"><button className="pri" onClick={() => run()}>{t('convert')}</button>
-        <button onClick={() => { if (!conv?.gcode) return setLog(l => [...l, t('noconv')]);
-          api('savefile', { name: 'drawing.gcode', content: conv.gcode }).then(r => setLog(l => [...l, '→ ' + (r?.path || '')]), e => setLog(l => [...l, 'ERR ' + e])); }}>{t('save')}</button></div>
-      <div className="hint">{t('dragsvg')}</div>
-      <div className="warn">{(conv?.warnings || []).join(' • ')}</div></section>
     <section className="p-text"><h2>{t('text')}</h2>
       <label><span>{t('doc')}</span><input type="file" accept=".pdf,.docx,.txt,.md" onChange={async e => { const f = e.target.files[0]; if (!f) return;
         const data = b64(new Uint8Array(await f.arrayBuffer()));
@@ -154,8 +123,42 @@ export default function SourcePanel({ t, pen, status, setLog, onConv }) {
         <button onClick={() => mode !== 'svg' && page > 0 && run(mode, off, page - 1)}>◀</button><b>{conv?.pages ? `${page + 1}/${conv.pages}` : '–'}</b>
         <button onClick={() => mode !== 'svg' && conv && page < conv.pages - 1 && run(mode, off, page + 1)}>▶</button></div>
       <div className="warn">{t('drag')}</div></section>
+    <section className="p-svg"><h2>{t('svg')}</h2>
+      <input type="file" accept=".svg,image/svg+xml" onChange={async e => { const s = await e.target.files[0].text(); setSvg(s); setMode('svg'); setOff([0, 0]); run('svg', [0, 0], 0, s); }} />
+      <label><span>{t('paper')}</span><select value={o.paper} onChange={e => set('paper', e.target.value)}><option>A4</option><option>A5</option><option>Letter</option></select></label>
+      <div className="margins">
+        <label><span>{t('mgl')}</span>{num('marginL', o.marginL)} мм</label>
+        <label><span>{t('mgr')}</span>{num('marginR', o.marginR)} мм</label>
+        <label><span>{t('mgt')}</span>{num('marginT', o.marginT)} мм</label>
+        <label><span>{t('mgb')}</span>{num('marginB', o.marginB)} мм</label>
+      </div>
+      <div className="hint">{t('marginhint')}</div>
+      <label><span>{t('scale')}</span>{num('scale', o.scale)} %</label>
+      <label><span>{t('center')}</span><input type="checkbox" checked={o.center} onChange={e => set('center', e.target.checked)} /></label>
+      <label><span>{t('feed')}</span>{num('feed', o.feed)}</label>
+      <label title={t('travelhint')}><span>{t('travelspeed')}</span>{num('travelFeed', o.travelFeed)}</label>
+      <div className="hint">{t('travelhint')}</div>
+      <label><span>{t('land')}</span><input type="checkbox" checked={o.landscape} onChange={e => set('landscape', e.target.checked)} /></label>
+      <label><span>{t('laser')}</span><input type="checkbox" checked={o.laserOff} onChange={e => set('laserOff', e.target.checked)} /></label>
+      <label title={t('invyhint')}><span>{t('invy')}</span><input type="checkbox" checked={o.invertY} onChange={e => set('invertY', e.target.checked)} /></label>
+      <div className="hint">{t('invyhint')}</div>
+      <label title={t('yorhint')}><span>{t('yorigin')}</span>
+        <select value={o.yOrigin || 'top'} onChange={e => set('yOrigin', e.target.value)}>
+          <option value="top">{t('yotop')}</option>
+          <option value="bottom">{t('yobottom')}</option>
+          <option value="reverse">{t('yoreverse')}</option>
+        </select></label>
+      <div className="hint">{t('yorhint')}</div>
+      <div className="row"><button className="pri" onClick={() => run()}>{t('convert')}</button>
+        <button onClick={() => { if (!conv?.gcode) return setLog(l => [...l, t('noconv')]);
+          api('savefile', { name: 'drawing.gcode', content: conv.gcode }).then(r => setLog(l => [...l, '→ ' + (r?.path || '')]), e => setLog(l => [...l, 'ERR ' + e])); }}>{t('save')}</button></div>
+      <div className="hint">{t('dragsvg')}</div>
+      <div className="warn">{(conv?.warnings || []).join(' • ')}</div></section>
     <section className="p-prev"><h2>{t('preview')}</h2><Preview conv={conv} pos={status.connected ? status.wpos : null} pick={pick} yOrigin={mode === 'svg' || mode === 'pdf' ? (o.yOrigin || 'top') : 'top'} sheet={sheet} margins={mg}
       onPick={(x, y) => { const n = { ...tx, startX: +x.toFixed(1), startY: +y.toFixed(1) }; setTx(n); setPick(false); setMode('text'); setPage(0); run('text', off, 0, svg, n); }}
       onDrop={(dx, dy) => { if (mode === 'text') { const n = { ...tx, startX: +Math.max(0, tx.startX + dx).toFixed(1), startY: +Math.max(0, tx.startY + dy).toFixed(1) }; setTx(n); run('text', off, page, svg, n); }
-        else { const n = [off[0] + dx, off[1] + dy]; setOff(n); run(mode, n); } }} /></section></>);
+        else { const n = [off[0] + dx, off[1] + dy]; setOff(n); run(mode, n); } }} />
+      {/* 0.5.25: caption under the canvas, as in the mockup — the selected format, the grid step
+          and the four margins that draw the dashed rectangle */}
+      <div className="hint">{o.paper} · {t('gridcap')}{(mg[0] + mg[1] + mg[2] + mg[3]) > 0.01 && ' · ' + t('margcap') + ': ' + [[t('mgl'), mg[0]], [t('mgr'), mg[1]], [t('mgt'), mg[2]], [t('mgb'), mg[3]]].map(p => p[0] + ' ' + p[1]).join(' / ')}</div></section></>);
 }
