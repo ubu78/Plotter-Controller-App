@@ -14,7 +14,7 @@ export default function ConnectionPanel({ t, status, send, gcode, setLog }) {
   const ov = Math.round(status.ov ?? 100);
   const run = () => gcode ? api('stream', { gcode }) : setLog?.(l => [...l, t('noconv')]);
   const runOff = !status.connected || !gcode, runTitle = !status.connected ? t('stoff') : !gcode ? t('noconv') : '';
-  return (<section><h2>{t('conn')}</h2>
+  return (<section className="p-conn"><h2>{t('conn')}</h2>
     <div className={`connstat ${mode}`} role="status" aria-live="polite" title={s}>
       <i /><b>{msg}</b>{status.connected && s && !connecting && <small>{s}</small>}
       {mode === 'err' && <span className="csfix">{t('sterrfix')}</span>}

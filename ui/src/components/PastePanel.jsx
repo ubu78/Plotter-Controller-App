@@ -33,7 +33,7 @@ export default function PastePanel({ t, setGcode, setLog }) {
     }
     setTxt(s);
   };
-  return (<section><h2>{t('readyg')}</h2>
+  return (<section className="p-paste"><h2>{t('readyg')}</h2>
     <label><span>{t('openf')}</span><input type="file" accept=".gcode,.ngc,.nc,.tap,.txt" onChange={openFile} /></label>
     <textarea ref={taRef} id="pasteta" className="gcode pasteta" value={txt} spellCheck={false}
       placeholder={t('pastehint')} onChange={e => setTxt(e.target.value)} />

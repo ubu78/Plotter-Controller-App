@@ -50,12 +50,15 @@ export default function App() {
         {t('abouttext').split('\n').map((l, i) => <p key={i}>{l}</p>)}
       </div>}
       <ConnectionPanel t={t} status={status} send={send} gcode={gcode} setLog={setLog} />
+      {/* 0.5.24: the ready G-code card moved right under Connection (grid area in style.css):
+          the conversion result stays on screen next to the plot controls instead of a full-width
+          row at the very bottom. */}
+      <GcodePanel t={t} gcode={gcode} setGcode={setGcode} setLog={setLog} />
       <ManualPanel t={t} send={send} pen={pen} status={status} />
       <PenPanel t={t} pen={pen} setPen={setPen} send={send} />
       <SourcePanel t={t} pen={pen} status={status} setLog={setLog} onConv={r => setGcode(r.gcode || '')} />
       <PastePanel t={t} setGcode={setGcode} setLog={setLog} />
       <SettingsPanel t={t} lang={lang} values={values} send={send} />
-      <GcodePanel t={t} gcode={gcode} setGcode={setGcode} setLog={setLog} />
       <ConsolePanel t={t} log={log.map(l => decorate(lang, l))} send={send} />
     </main></>);
 }

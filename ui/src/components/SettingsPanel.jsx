@@ -9,7 +9,7 @@ export default function SettingsPanel({ t, lang, values, send }) {
   useEffect(() => setEdit({}), [values]);
   const ids = Object.keys(values).sort((a, b) => a - b);
   const write = () => Object.entries(edit).forEach(([id, v]) => v !== values[id] && send(`$${id}=${v}`));
-  return (<section className="wide"><h2>{t('sets')}</h2>
+  return (<section className="wide p-set"><h2>{t('sets')}</h2>
     <div className="row"><button onClick={() => send('$$')}>{t('rd')}</button><button className="pri" onClick={write}>{t('wall')}</button>
       <button onClick={() => setEdit(e => ({ ...e, ...Object.fromEntries(Object.entries(preset).filter(([k]) => k in values)) }))}>{t('preset')}</button></div>
     <div className="sets">{ids.map(id => <label key={id}><span style={{ minWidth: 150 }}>${id} {settingName(lang, id)}</span>

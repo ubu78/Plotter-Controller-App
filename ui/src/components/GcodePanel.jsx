@@ -38,7 +38,7 @@ export default function GcodePanel({ t, gcode, setGcode, setLog }) {
     api('savefile', { name: 'drawing.gcode', content: gcode })
       .then(r => log(t('saved') + (r?.path || '')), e => log('ERR ' + e));
   };
-  return (<section className="wide"><h2>{t('gcode')} {lines.length ? `· ${lines.length} ${t('glines')}` : ''}</h2>
+  return (<section className="p-gcode"><h2>{t('gcode')} {lines.length ? `· ${lines.length} ${t('glines')}` : ''}</h2>
     <div className="row">
       <button className={edit ? 'pri' : ''} onClick={() => setEdit(v => !v)}>{edit ? t('gdone') : t('gedit')}</button>
       <button onClick={paste}>{t('gpaste')}</button>

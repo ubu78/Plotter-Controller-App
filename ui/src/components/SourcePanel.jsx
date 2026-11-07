@@ -77,7 +77,7 @@ export default function SourcePanel({ t, pen, status, setLog, onConv }) {
   };
   const num = (k, v, f = set) => <input type="number" value={v} onChange={e => f(k, +e.target.value)} />;
   return (<>
-    <section><h2>{t('svg')}</h2>
+    <section className="p-svg"><h2>{t('svg')}</h2>
       <input type="file" accept=".svg,image/svg+xml" onChange={async e => { const s = await e.target.files[0].text(); setSvg(s); setMode('svg'); setOff([0, 0]); run('svg', [0, 0], 0, s); }} />
       <label><span>{t('paper')}</span><select value={o.paper} onChange={e => set('paper', e.target.value)}><option>A4</option><option>A5</option><option>Letter</option></select></label>
       <div className="margins">
@@ -108,7 +108,7 @@ export default function SourcePanel({ t, pen, status, setLog, onConv }) {
           api('savefile', { name: 'drawing.gcode', content: conv.gcode }).then(r => setLog(l => [...l, '→ ' + (r?.path || '')]), e => setLog(l => [...l, 'ERR ' + e])); }}>{t('save')}</button></div>
       <div className="hint">{t('dragsvg')}</div>
       <div className="warn">{(conv?.warnings || []).join(' • ')}</div></section>
-    <section><h2>{t('text')}</h2>
+    <section className="p-text"><h2>{t('text')}</h2>
       <label><span>{t('doc')}</span><input type="file" accept=".pdf,.docx,.txt,.md" onChange={async e => { const f = e.target.files[0]; if (!f) return;
         const data = b64(new Uint8Array(await f.arrayBuffer()));
         if (/\.pdf$/i.test(f.name) && pdfDraw) { setPdf(data); setMode('pdf'); setOff([0, 0]); setPage(0); run('pdf', [0, 0], 0, svg, tx, data); return; }
@@ -154,7 +154,7 @@ export default function SourcePanel({ t, pen, status, setLog, onConv }) {
         <button onClick={() => mode !== 'svg' && page > 0 && run(mode, off, page - 1)}>◀</button><b>{conv?.pages ? `${page + 1}/${conv.pages}` : '–'}</b>
         <button onClick={() => mode !== 'svg' && conv && page < conv.pages - 1 && run(mode, off, page + 1)}>▶</button></div>
       <div className="warn">{t('drag')}</div></section>
-    <section><h2>{t('preview')}</h2><Preview conv={conv} pos={status.connected ? status.wpos : null} pick={pick} yOrigin={mode === 'svg' || mode === 'pdf' ? (o.yOrigin || 'top') : 'top'} sheet={sheet} margins={mg}
+    <section className="p-prev"><h2>{t('preview')}</h2><Preview conv={conv} pos={status.connected ? status.wpos : null} pick={pick} yOrigin={mode === 'svg' || mode === 'pdf' ? (o.yOrigin || 'top') : 'top'} sheet={sheet} margins={mg}
       onPick={(x, y) => { const n = { ...tx, startX: +x.toFixed(1), startY: +y.toFixed(1) }; setTx(n); setPick(false); setMode('text'); setPage(0); run('text', off, 0, svg, n); }}
       onDrop={(dx, dy) => { if (mode === 'text') { const n = { ...tx, startX: +Math.max(0, tx.startX + dx).toFixed(1), startY: +Math.max(0, tx.startY + dy).toFixed(1) }; setTx(n); run('text', off, page, svg, n); }
         else { const n = [off[0] + dx, off[1] + dy]; setOff(n); run(mode, n); } }} /></section></>);

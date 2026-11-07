@@ -21,7 +21,7 @@ canvas{width:100%;cursor:move;touch-action:none;background:#fff;border:1px solid
 section.wide{grid-column:1/-1}
 .credit{font-size:11px;color:var(--mu);text-decoration:none;border:1px solid var(--bd);border-radius:10px;padding:2px 8px}.credit:hover{color:var(--ac);border-color:var(--ac)}
 header h1{flex:0 1 auto}header{flex-wrap:wrap}header span{margin-left:auto}
-.gcode{margin:0;height:220px;overflow:auto;background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:6px;font:12px/1.4 monospace;white-space:pre}
+.gcode{margin:0;height:140px;overflow:auto;background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:6px;font:12px/1.4 monospace;white-space:pre}
 .gcodeedit{width:100%;resize:vertical;tab-size:2}
 .pasteta{height:140px;resize:vertical;white-space:pre;font:12px/1.4 monospace}
 .credit.rust{color:#b7410e;border-color:#b7410e}@media(prefers-color-scheme:dark){.credit.rust{color:#ff8a50;border-color:#ff8a50}}
@@ -55,3 +55,14 @@ input[type=range]{flex:1;min-width:0;padding:0;height:22px;accent-color:var(--ac
 @keyframes csblink{50%{opacity:.2}}
 .connstat.err i{animation:csblink 1s steps(1) infinite}.connstat.mid i{animation:csblink 1.4s steps(1) infinite}
 @media(prefers-color-scheme:dark){.connstat.ok i,.connstat.ok b{color:#66bb6a}.connstat.mid i,.connstat.mid b{color:#ffb74d}}
+/* 0.5.24: «Готовый G-код» lives right under «Подключение» and the sheet preview takes a big
+   two-column area. From 1010px the preview spans 2 columns; from 1340px (4 columns) every card
+   gets an explicit grid area: col 1 = Connection / G-code / Text / GRBL settings, middle = the
+   2×2 preview, right = Manual+Pen / SVG / Paste, full-width console at the bottom. */
+@media(min-width:1010px){section.p-prev{grid-column:span 2}}
+@media(min-width:1340px){
+  main{grid-template-columns:repeat(4,1fr);grid-template-areas:"conn manual pen svg" "gcode manual pen svg" "text prev prev paste" "set prev prev paste" "console console console console"}
+  /* section.p-* ties with section.wide (0,1,1) and wins by order: a card that keeps the
+     `wide` class for narrow windows still lands in its grid area on the 4-column layout */
+  section.p-conn{grid-area:conn}section.p-gcode{grid-area:gcode}section.p-manual{grid-area:manual}section.p-pen{grid-area:pen}section.p-svg{grid-area:svg}section.p-text{grid-area:text}section.p-prev{grid-area:prev}section.p-paste{grid-area:paste}section.p-set{grid-area:set}section.p-console{grid-area:console}
+}

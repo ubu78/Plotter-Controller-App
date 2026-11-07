@@ -17,7 +17,7 @@ export default function ManualPanel({ t, send, pen, status }) {
   const coord = i => (status.connected ? status.wpos[i] || 0 : 0).toFixed(inch ? 3 : 2);
   const ax = (n, i, c) => (<div className="axrow"><button className="zbtn" title={`G10 L20 P${p} ${n}0`} onClick={() => send(`G10 L20 P${p} ${n}0`)}>⟲</button>
     <b style={{ color: c }}>{n}</b><span className="work">{t('work')}</span><code>{coord(i)}</code></div>);
-  return (<section><h2>{t('manual')}</h2>
+  return (<section className="p-manual"><h2>{t('manual')}</h2>
     <div className="row"><select className="wcs" value={wcs} onChange={pickWcs} title={t('wcshint')}>{[54, 55, 56, 57, 58, 59].map(n => <option key={n}>{'G' + n}</option>)}</select>
       <button className={inch ? '' : 'pri'} onClick={() => { setInch(false); send('G21'); }}>mm</button>
       <button className={inch ? 'pri' : ''} onClick={() => { setInch(true); send('G20'); }}>{t('inch')}</button></div>

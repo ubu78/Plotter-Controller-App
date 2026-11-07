@@ -19,7 +19,7 @@ export default function PenPanel({ t, pen, setPen, send }) {
       <input type="range" min="0" max={max} step={pen.servStep || 1} value={Math.min(max, Math.max(0, v))} onChange={e => apply(+e.target.value)} />
     </div>);
   };
-  return (<section><h2>{t('penset')}</h2>
+  return (<section className="p-pen"><h2>{t('penset')}</h2>
     <label><span>{t('penmode')}</span><select value={pen.penMode} onChange={e => set('penMode', e.target.value)}><option value="servo">{t('msvo')}</option><option value="z">{t('mz')}</option></select></label>
     {pen.penMode === 'servo'
       ? <><label><span style={{ minWidth: 150 }}>{t('cup')}</span><input style={{ width: 130 }} value={pen.servoUp} onChange={e => set('servoUp', e.target.value)} /></label>
