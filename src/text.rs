@@ -1,9 +1,10 @@
 //! Text/Markdown -> G-code. Google Fonts (full TTF) with cache, word wrap, pages, 4 letter styles:
-//! pen (one continuous centre line, handwritten) / single (fast thin contour) / fill (dense solid) / hatch (diagonal).
+//! pen (one continuous centre line, handwritten) / single (fast thin contour) / fill (dense solid) / hatch (diagonal,
+//! since 0.5.31 with pattern variants: lines / dots / triangle / lightning).
 //! Since 0.5.16 every font installed on the system is selectable too: the family comes from the
 //! font's own name table, the value sent back to the converter is `sys:<path>` (or `sys:<path>#<n>`
 //! for a TrueType collection) and is read straight from disk — no download, no cache.
-use crate::gcode::{bbox, paper, polys_to_conv, Conv, Opt, Polys};
+use crate::gcode::{bbox, paper, Conv, Opt, Polys};
 use crate::skeleton::{glyph_strokes, Outline};
 use std::{fs, io::Read, path::PathBuf};
 use ttf_parser::OutlineBuilder;
@@ -240,8 +241,126 @@ fn fill_lines(polys: &Polys, spacing: f64, angle: f64) -> Polys {
     out.into_iter().map(|p| p.iter().map(|v| [v[0] * cs - v[1] * sn, v[0] * sn + v[1] * cs]).collect()).collect()
 }
 
+/// Even-odd containment of a point in closed polygons — the same rule the scanline
+/// crossing count of fill_lines uses. Works in the already-rotated space of the callers.
+fn inside(polys: &Polys, x: f64, y: f64) -> bool {
+    let mut c = false;
+    for p in polys { let n = p.len();
+        for i in 0..n { let (a, b) = (p[i], p[(i + 1) % n]);
+            if (a[1] > y) != (b[1] > y) && x < (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1]) + a[0] { c = !c; } } }
+    c
+}
+
+/// 0.5.31 «Точки» infill: a staggered grid of tiny 8-segment circles (one pen dot each),
+/// every dot whose centre passes the even-odd test. The grid runs at half the hatch spacing
+/// (letters have thin strokes — a full-spacing grid would land mostly in the gaps). Rows run
+/// serpentine so the pen-up travels stay short. Rotated space like fill_lines — the hatch
+/// angle turns the grid too.
+fn fill_dots(polys: &Polys, spacing: f64, angle: f64) -> Polys {
+    let th = angle.to_radians(); let (sn, cs) = th.sin_cos();
+    let unrot = |v: &[f64; 2]| [v[0] * cs - v[1] * sn, v[0] * sn + v[1] * cs];
+    let rp: Polys = polys.iter().map(|p| p.iter().map(|v| [v[0] * cs + v[1] * sn, -v[0] * sn + v[1] * cs]).collect()).collect();
+    let [x0, y0, x1, y1] = bbox(&rp);
+    let step = spacing * 0.5; // dot grid pitch: twice as dense as the line hatch
+    let r = (spacing * 0.15).clamp(0.06, 0.5); // dot radius
+    let mut out: Polys = vec![]; let mut row = 0usize;
+    let mut y = y0 + step * 0.5;
+    while y < y1 {
+        let mut xs: Vec<f64> = vec![];
+        let mut x = x0 + step * 0.5 + if row % 2 == 1 { step * 0.5 } else { 0.0 };
+        while x < x1 { if inside(&rp, x, y) { xs.push(x); } x += step; }
+        if row % 2 == 1 { xs.reverse(); } // serpentine order: less empty travel
+        for x in xs {
+            let c = unrot(&[x, y]);
+            let mut dot: Vec<[f64; 2]> = vec![];
+            for k in 0..=8 { let a = k as f64 / 8.0 * 2.0 * std::f64::consts::PI;
+                dot.push([c[0] + r * a.cos(), c[1] + r * a.sin()]); }
+            out.push(dedupe(dot));
+        }
+        row += 1; y += step;
+    }
+    out
+}
+
+/// 0.5.31 «Треугольник» infill: a staggered grid of small closed triangle outlines (apex up,
+/// side ~0.7 of the hatch spacing), every triangle whose centre passes the even-odd test —
+/// the triangle cousin of fill_dots. Rows run serpentine; the hatch angle rotates the grid.
+fn fill_triangles(polys: &Polys, spacing: f64, angle: f64) -> Polys {
+    let th = angle.to_radians(); let (sn, cs) = th.sin_cos();
+    let unrot = |v: &[f64; 2]| [v[0] * cs - v[1] * sn, v[0] * sn + v[1] * cs];
+    let rp: Polys = polys.iter().map(|p| p.iter().map(|v| [v[0] * cs + v[1] * sn, -v[0] * sn + v[1] * cs]).collect()).collect();
+    let [x0, y0, x1, y1] = bbox(&rp);
+    let s = (spacing * 0.7).clamp(0.4, 3.0); // triangle side
+    let (h, px, py) = (s * 0.85, s * 1.25, s * 1.1); // height, horizontal/vertical pitch
+    let mut out: Polys = vec![]; let mut row = 0usize;
+    let mut y = y0 + py * 0.5;
+    while y < y1 {
+        let mut xs: Vec<f64> = vec![];
+        let mut x = x0 + px * 0.5 + if row % 2 == 1 { px * 0.5 } else { 0.0 };
+        while x < x1 { if inside(&rp, x, y) { xs.push(x); } x += px; }
+        if row % 2 == 1 { xs.reverse(); }
+        for x in xs {
+            let c = unrot(&[x, y]);
+            let tri = vec![[c[0], c[1] - h], [c[0] - s * 0.5, c[1] + h * 0.5], [c[0] + s * 0.5, c[1] + h * 0.5], [c[0], c[1] - h]];
+            out.push(dedupe(tri));
+        }
+        row += 1; y += py;
+    }
+    out
+}
+
+/// 0.5.31 «Молния» infill: the fill_lines scanline machine with every straight scanline
+/// replaced by an irregular jagged zigzag clipped to the same even-odd crossings. The row
+/// pitch is 0.55 of the hatch spacing so the bolts read as texture; each leg advances a
+/// pseudo-random distance and flips to a pseudo-random height (an LCG stream seeded per
+/// row, so the output is fully deterministic — never actually random).
+fn fill_zigzag(polys: &Polys, spacing: f64, angle: f64) -> Polys {
+    let th = angle.to_radians(); let (sn, cs) = th.sin_cos();
+    let rp: Polys = polys.iter().map(|p| p.iter().map(|v| [v[0] * cs + v[1] * sn, -v[0] * sn + v[1] * cs]).collect()).collect();
+    let [_x0, y0, _x1, y1] = bbox(&rp);
+    let pitch = spacing * 0.55;
+    let mut out: Polys = vec![];
+    let (mut flip, mut y, mut row) = (false, y0 + pitch * 0.5, 0usize);
+    while y < y1 {
+        let mut xs: Vec<f64> = vec![];
+        for p in &rp { let n = p.len();
+            for i in 0..n { let (a, b) = (p[i], p[(i + 1) % n]);
+                if (a[1] <= y) != (b[1] <= y) { xs.push(a[0] + (y - a[1]) / (b[1] - a[1]) * (b[0] - a[0])); } } }
+        xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mut segs: Vec<(f64, f64)> = xs.chunks(2).filter(|c| c.len() == 2).map(|c| (c[0], c[1])).filter(|(a, b)| b - a > 0.05).collect();
+        if !segs.is_empty() {
+            if flip { segs.reverse(); for s in &mut segs { std::mem::swap(&mut s.0, &mut s.1); } }
+            flip = !flip;
+            // lightning leg state runs across the whole row: an LCG stream seeded by the
+            // row index, the current offset dy flips sign and height at every vertex
+            let mut lcg = (row as u32).wrapping_mul(2654435761).wrapping_add(12345) | 1;
+            let mut dy = spacing * 0.3;
+            for (a, b) in segs {
+                let mut pts: Vec<[f64; 2]> = vec![[a, y + dy]];
+                let mut v = a;
+                loop { // next leg strictly inside the segment, never past b
+                    lcg = lcg.wrapping_mul(1664525).wrapping_add(1013904223);
+                    let dx = spacing * (0.5 + ((lcg >> 8) & 255) as f64 / 255.0 * 0.8); // 0.5..1.3 steps
+                    if v + dx >= b { break; }
+                    v += dx;
+                    lcg = lcg.wrapping_mul(1664525).wrapping_add(1013904223);
+                    dy = if dy > 0.0 { -1.0 } else { 1.0 } * spacing * (0.2 + ((lcg >> 8) & 255) as f64 / 255.0 * 0.25); // ±0.2..0.45 amp
+                    pts.push([v, y + dy]);
+                }
+                pts.push([b, y + dy]);
+                let p = pts[0];
+                let near = out.last().and_then(|l| l.last())
+                    .map_or(false, |pp| ((pp[0] - p[0]).powi(2) + (pp[1] - p[1]).powi(2)).sqrt() < spacing * 1.6);
+                if near { out.last_mut().unwrap().extend(pts); } else { out.push(pts); }
+            }
+        }
+        row += 1; y += pitch;
+    }
+    out.into_iter().map(|p| p.iter().map(|v| [v[0] * cs - v[1] * sn, v[0] * sn + v[1] * cs]).collect()).collect()
+}
+
 /// Relative plotting speed of each letter style (multiplies the print speed setting).
-fn feed_mult(mode: &str) -> f64 {
+pub fn feed_mult(mode: &str) -> f64 { // 0.5.27: pub — the combined SVG+Text program switches feeds per part
     match mode { "single" => 1.5, "fill" => 0.5, "hatch" => 0.8, _ => 1.0 }
 }
 
@@ -250,13 +369,20 @@ fn infill_step(o: &Opt, auto: f64, lo: f64, hi: f64) -> f64 {
     if o.fill_spacing > 0.0 { o.fill_spacing.clamp(0.05, 10.0) } else { auto.clamp(lo, hi) }
 }
 
-pub fn text_to_conv(text: &str, o: &Opt) -> Result<Conv, String> {
-    let mut warn = vec![];
-    let (data, face_idx) = load_font(&o.font, &mut warn)?;
+/// 0.5.28: layout result with the infill separated from the outlines. `main` carries the
+/// outlines (or the pen/single strokes), `infill` is Some only for the fill/hatch styles
+/// when it is non-empty — the marker block can then send it to a different marker.
+pub struct TextParts { pub main: Polys, pub infill: Option<Polys>, pub pages: usize, pub page: usize }
+
+/// 0.5.27: layout only — word wrap, pagination, glyph polygons in mm from the origin (0,0),
+/// NO sheet placement: the caller positions the polys via keep_origin + Start X/Y exactly
+/// like text_to_conv does below. Shared by text_to_conv and the combined SVG+Text program.
+pub fn text_to_parts(text: &str, o: &Opt, warn: &mut Vec<String>) -> Result<TextParts, String> {
+    let (data, face_idx) = load_font(&o.font, warn)?;
     let face = ttf_parser::Face::parse(&data, face_idx).map_err(|e| e.to_string())?;
     let (upm, sz) = (face.units_per_em() as f64, o.size);
     let text = if o.markdown { strip_md(text) } else { text.to_string() };
-    let (pw, ph) = paper(o, &mut warn);
+    let (pw, ph) = paper(o, warn);
     let mut miss: Vec<char> = text.chars().filter(|&c| !c.is_whitespace() && face.glyph_index(c).is_none()).collect(); miss.sort(); miss.dedup();
     if !miss.is_empty() { warn.push(format!("Font has no glyphs for: {}", miss.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(" "))); }
     let adv = |c: char| face.glyph_index(c).and_then(|g| face.glyph_hor_advance(g)).unwrap_or(0) as f64 / upm * sz;
@@ -266,14 +392,15 @@ pub fn text_to_conv(text: &str, o: &Opt) -> Result<Conv, String> {
     // height (legacy single margin behaved exactly the same way)
     let (_, mr, _, mb) = crate::gcode::margins(o);
     let maxw = pw - o.start_x - mr;
-    let mut lines: Vec<String> = vec![];
+    // (line, is the last line of its paragraph): justify stretches only continuing lines
+    let mut lines: Vec<(String, bool)> = vec![];
     for para in text.split('\n') {
         let mut line = String::new();
         for w in para.split_whitespace() {
             let t = if line.is_empty() { w.to_string() } else { format!("{line} {w}") };
-            if !line.is_empty() && width(&t) > maxw { lines.push(std::mem::take(&mut line)); line = w.to_string(); } else { line = t; }
+            if !line.is_empty() && width(&t) > maxw { lines.push((std::mem::take(&mut line), false)); line = w.to_string(); } else { line = t; }
         }
-        lines.push(line);
+        lines.push((line, true));
     }
     let step = sz * o.line_height;
     let max_lines = (((ph - o.start_y - mb - sz) / step).floor() as i64 + 1).max(1) as usize;
@@ -281,12 +408,29 @@ pub fn text_to_conv(text: &str, o: &Opt) -> Result<Conv, String> {
     let page = o.page.unwrap_or(0).min(pages - 1);
     if o.page.is_some() { lines = lines.into_iter().skip(page * max_lines).take(max_lines).collect(); }
     else if lines.len() > max_lines { warn.push(format!("Text truncated: {} line(s) do not fit on the sheet", lines.len() - max_lines)); lines.truncate(max_lines); }
-    while lines.last().map_or(false, |l| l.is_empty()) { lines.pop(); }
+    while lines.last().map_or(false, |(l, _)| l.is_empty()) { lines.pop(); }
 
     let mut polys: Polys = vec![];
+    let mut infill: Polys = vec![]; // 0.5.28: fill/hatch infill, collected separately from the outlines
     let fm = o.fill_mode.as_str();
-    for (i, l) in lines.iter().enumerate() {
-        let base = sz * 0.8 + i as f64 * step; let mut x = 0.0;
+    for (i, (l, para_last)) in lines.iter().enumerate() {
+        let base = sz * 0.8 + i as f64 * step;
+        // 0.5.26: alignment inside the printable width [start_x .. paper right margin]:
+        // center/right shift the whole line (a line wider than the width stays at 0);
+        // justify adds the missing width to every inter-word space of a continuing line,
+        // so it ends exactly at the right edge — paragraph-final and single-word lines
+        // keep their natural spacing (standard typographic rule)
+        let lw = width(l);
+        let (dx, extra) = match o.align.as_str() {
+            "center" => (((maxw - lw) / 2.0).max(0.0), 0.0),
+            "right" => ((maxw - lw).max(0.0), 0.0),
+            "justify" if !para_last && lw < maxw => {
+                let gaps = l.matches(' ').count() as f64;
+                if gaps > 0.0 { (0.0, (maxw - lw) / gaps) } else { (0.0, 0.0) }
+            }
+            _ => (0.0, 0.0),
+        };
+        let mut x = dx;
         for ch in l.chars() {
             match fm {
                 "pen" => { // one continuous line through the stroke centres, handwritten look
@@ -303,7 +447,18 @@ pub fn text_to_conv(text: &str, o: &Opt) -> Result<Conv, String> {
                         if !ob.polys.is_empty() {
                             // spacing: user setting wins over the automatic step; angle: 0° for solid fill, adjustable for hatch
                             let (sp, ang) = if fm == "fill" { (infill_step(o, sz / 15.0, 0.3, 1.0), 0.0) } else { (infill_step(o, sz / 4.0, 1.0, 3.0), o.hatch_angle) };
-                            polys.extend(fill_lines(&ob.polys, sp, ang));
+                            // 0.5.31: hatch pattern variants — lines (the old diagonal scanlines),
+                            // dots, triangle (grid of small triangle outlines) and lightning (irregular zigzag)
+                            infill.extend(match fm {
+                                "fill" => fill_lines(&ob.polys, sp, 0.0),
+                                "hatch" => match o.hatch_style.as_str() {
+                                    "dots" => fill_dots(&ob.polys, sp, ang),
+                                    "triangle" => fill_triangles(&ob.polys, sp, ang),
+                                    "lightning" => fill_zigzag(&ob.polys, sp, ang),
+                                    _ => fill_lines(&ob.polys, sp, ang),
+                                },
+                                _ => fill_lines(&ob.polys, sp, ang),
+                            });
                             polys.extend(ob.polys);
                         }
                     }
@@ -311,12 +466,37 @@ pub fn text_to_conv(text: &str, o: &Opt) -> Result<Conv, String> {
                 _ => {}
             }
             x += adv(ch);
+            if extra > 0.0 && ch == ' ' { x += extra; } // justify: stretched word gap
         }
     }
+    let infill = if matches!(fm, "fill" | "hatch") && !infill.is_empty() { Some(infill) } else { None };
+    Ok(TextParts { main: polys, infill, pages, page })
+}
+
+pub fn text_to_conv(text: &str, o: &Opt) -> Result<Conv, String> {
+    let mut warn = vec![];
+    let tp = text_to_parts(text, o, &mut warn)?;
+    let fm = o.fill_mode.as_str();
     let mut o2 = o.clone(); o2.keep_origin = true; o2.margin = 0.0; o2.margin_l = 0.0; o2.margin_r = 0.0; o2.margin_t = 0.0; o2.margin_b = 0.0; o2.center = false; o2.scale = 100.0; o2.offset_x = o.start_x; o2.offset_y = o.start_y;
     o2.feed *= feed_mult(fm);
-    if polys.is_empty() { warn.push("Nothing to draw".into()); }
-    let mut c = polys_to_conv(polys, 1.0, &o2, warn); c.pages = Some(pages); c.page = Some(page);
+    let (pw, ph) = crate::gcode::paper(&o2, &mut warn);
+    if tp.main.is_empty() {
+        warn.push("No drawable shapes found".into());
+        return Ok(Conv { gcode: String::new(), warnings: warn, paths: vec![], bbox: None, paper: [pw, ph], pages: Some(tp.pages), page: Some(tp.page) });
+    }
+    // 0.5.28: the infill (fill/hatch) becomes its own part — a different marker can draw it —
+    // but both groups travel through the sheet transform TOGETHER (one common bbox for the
+    // auto-scale and the mirrors), so the infill can never shift away from the outlines
+    let mut groups: Vec<Polys> = Vec::new();
+    if let Some(inf) = tp.infill.as_ref() { if !inf.is_empty() { groups.push(inf.clone()); } }
+    groups.push(tp.main.clone());
+    let pos = crate::gcode::position_split(groups, 1.0, &o2, pw, ph, &mut warn);
+    let mut parts: Vec<crate::gcode::Part> = Vec::new();
+    let mut pi = 0usize;
+    if pos.len() == 2 { parts.push(crate::gcode::Part { id: crate::gcode::PartId::Infill, feed: o2.feed, paths: pos[0].clone() }); pi = 1; }
+    parts.push(crate::gcode::Part { id: crate::gcode::PartId::Text, feed: o2.feed, paths: pos[pi].clone() });
+    let mut c = crate::gcode::emit_program("Text", &parts, &o2, pw, ph, warn);
+    c.pages = Some(tp.pages); c.page = Some(tp.page);
     Ok(c)
 }
 
@@ -505,5 +685,105 @@ mod tests {
         let o = Opt::default();
         assert_eq!(o.fill_spacing, 0.0, "0 = automatic spacing");
         assert_eq!(o.hatch_angle, 45.0);
+    }
+
+    #[test]
+    fn hatch_style_defaults_to_lines() {
+        assert_eq!(Opt::default().hatch_style, "lines", "default keeps the old diagonal hatch");
+    }
+
+    #[test]
+    fn hatch_style_variants_all_differ_and_dots_lift_more() {
+        ensure_test_font();
+        let mk = |hs: &str| {
+            let o = Opt { font: "DejaVu Sans".into(), fill_mode: "hatch".into(), hatch_style: hs.into(), ..Default::default() };
+            text_to_conv("Ш", &o).unwrap()
+        };
+        let (lines, dots, tri, light) = (mk("lines"), mk("dots"), mk("triangle"), mk("lightning"));
+        assert_ne!(lines.gcode, dots.gcode, "dots must change the infill");
+        assert_ne!(lines.gcode, tri.gcode, "triangle must change the infill");
+        assert_ne!(lines.gcode, light.gcode, "lightning must change the infill");
+        assert_ne!(tri.gcode, light.gcode, "regular sawtooth vs irregular bolt must differ");
+        let lift = |c: &Conv| c.gcode.matches("M3 S255").count();
+        assert!(lift(&dots) > lift(&lines), "dots = one pen-down per dot, many more lifts");
+        assert!(lift(&tri) < lift(&dots), "zigzag rows stay chained into a few strokes");
+        assert_eq!(mk("lines").gcode, mk("").gcode, "unknown hatch_style falls back to lines");
+    }
+
+    /// Visual probe (not part of CI): with PLOTTER_PROBE_DIR set, dumps the four hatch
+    /// patterns' paths of the word «ПЛОТ» as JSON so a drawing script can render them.
+    #[test]
+    fn hatch_style_probe_dump() {
+        let dir = match std::env::var("PLOTTER_PROBE_DIR") { Ok(d) => d, Err(_) => return };
+        ensure_test_font();
+        let mut dump = serde_json::Map::new();
+        for hs in ["lines", "dots", "triangle", "lightning"] {
+            let o = Opt { font: "DejaVu Sans".into(), size: 20.0, fill_mode: "hatch".into(), hatch_style: hs.into(), ..Default::default() };
+            let c = text_to_conv("ПЛОТ", &o).unwrap();
+            dump.insert(hs.to_string(), serde_json::to_value(&c.paths).unwrap());
+        }
+        fs::write(std::path::Path::new(&dir).join("hatch-probe.json"), serde_json::to_string(&dump).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn hatch_styles_respect_angle_and_stay_deterministic() {        ensure_test_font();
+        let mk = |hs: &str, a: f64| {
+            let o = Opt { font: "DejaVu Sans".into(), fill_mode: "hatch".into(), hatch_style: hs.into(), hatch_angle: a, ..Default::default() };
+            text_to_conv("Ш", &o).unwrap()
+        };
+        for hs in ["dots", "triangle", "lightning"] {
+            assert_ne!(mk(hs, 45.0).paths, mk(hs, 0.0).paths, "{hs}: the hatch angle must rotate the pattern");
+        }
+        assert_eq!(mk("lightning", 45.0).gcode, mk("lightning", 45.0).gcode, "lightning zigzag is seeded, not random");
+    }
+
+    #[test]
+    fn alignment_shifts_center_and_right() {
+        ensure_test_font();
+        let extents = |align: &str| {
+            let o = Opt { font: "DejaVu Sans".into(), size: 6.0, align: align.into(), ..Default::default() };
+            let c = text_to_conv("Выравнивание", &o).unwrap(); // one line: no wrap on A4
+            let xs: Vec<f64> = c.paths.iter().flat_map(|p| p.iter().map(|v| v[0])).collect();
+            (xs.iter().cloned().fold(f64::MAX, f64::min), xs.iter().cloned().fold(f64::MIN, f64::max))
+        };
+        let (l, c, r) = (extents("left"), extents("center"), extents("right"));
+        assert!(l.0.abs() < 2.0, "left starts at x=0: {l:?}");
+        assert!(c.0 > l.0 + 50.0, "center moves the line right: {c:?} vs {l:?}");
+        assert!(r.0 > c.0, "right starts even further: {r:?} vs {c:?}");
+        // printable width on a plain A4 = 210 mm: a right-aligned line ends at the edge
+        assert!((r.1 - 210.0).abs() < 2.0, "right line ends at the paper edge: {r:?}");
+        // the middle of a centered line sits at the middle of the sheet (105 mm)
+        assert!(((c.0 + c.1) / 2.0 - 105.0).abs() < 2.0, "centered line's middle at sheet middle: {c:?}");
+    }
+
+    #[test]
+    fn justify_stretches_continuing_lines_only() {
+        ensure_test_font();
+        let o = Opt { font: "DejaVu Sans".into(), size: 6.0, align: "justify".into(), ..Default::default() };
+        let text = "слово ".repeat(60); // wraps into several lines, one paragraph
+        let c = text_to_conv(&text, &o).unwrap();
+        assert_eq!(c.pages, Some(1), "fits on one page");
+        // bin every point into its line: baseline_i = 4.8 + i*8.4; +2 mm covers descenders,
+        // caps+descender (6.4 mm) stay inside one 8.4 mm band
+        let mut ends: Vec<f64> = vec![];
+        for p in &c.paths { for v in p { let i = ((v[1] - 4.8 + 2.0) / 8.4).floor() as usize;
+            while ends.len() <= i { ends.push(f64::MIN); } ends[i] = ends[i].max(v[0]); } }
+        assert!(ends.len() >= 3, "several wrapped lines expected: {ends:?}");
+        let first = ends.len() - 1; // index of the paragraph-final line
+        for (i, e) in ends.iter().enumerate() {
+            if i < first { assert!((e - 210.0).abs() < 1.5, "continuing line {i} must reach the right edge: {e}"); }
+        }
+        assert!(ends[first] < 200.0, "paragraph-final line keeps natural width: {}", ends[first]);
+        // and really stretched, not a coincidence: left-aligned line 0 is narrower
+        let ol = Opt { font: "DejaVu Sans".into(), size: 6.0, ..Default::default() };
+        let cl = text_to_conv(&text, &ol).unwrap();
+        let e0 = cl.paths.iter().flat_map(|p| p.iter()).filter(|v| ((v[1] - 4.8 + 2.0) / 8.4).floor() < 1.0)
+            .map(|v| v[0]).fold(f64::MIN, f64::max);
+        assert!(ends[0] > e0 + 5.0, "justify line 0 ({}) wider than left ({})", ends[0], e0);
+    }
+
+    #[test]
+    fn align_default_is_left() {
+        assert_eq!(Opt::default().align, "left");
     }
 }

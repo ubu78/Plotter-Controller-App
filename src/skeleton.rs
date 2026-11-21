@@ -25,7 +25,10 @@ impl ttf_parser::OutlineBuilder for Outline {
     fn close(&mut self) { if self.cur.len() > 1 { self.polys.push(std::mem::take(&mut self.cur)); } else { self.cur.clear(); } }
 }
 
-fn raster(polys: &Polys, w: usize, h: usize) -> Vec<u8> {
+/// Scanline rasterizer with a fill rule: `evenodd` selects the even-odd rule (SVG
+/// `fill-rule="evenodd"`, holes by crossing parity), otherwise nonzero winding (TrueType
+/// glyphs, the SVG default). Polygons are closed implicitly (open subpaths fill as if closed).
+pub fn raster_rule(polys: &Polys, w: usize, h: usize, evenodd: bool) -> Vec<u8> {
     let mut g = vec![0u8; w * h];
     for r in 0..h {
         let yc = r as f64 + 0.5; let mut xs: Vec<(f64, i32)> = vec![];
@@ -35,10 +38,35 @@ fn raster(polys: &Polys, w: usize, h: usize) -> Vec<u8> {
         let mut wn = 0;
         for k in 0..xs.len().saturating_sub(1) {
             wn += xs[k].1;
-            if wn != 0 { let mut c = (xs[k].0 - 0.5).ceil().max(0.0) as usize; while (c as f64) < xs[k + 1].0 - 0.5 && c < w { g[r * w + c] = 1; c += 1; } }
+            if if evenodd { k % 2 == 0 } else { wn != 0 } {
+                let mut c = (xs[k].0 - 0.5).ceil().max(0.0) as usize; while (c as f64) < xs[k + 1].0 - 0.5 && c < w { g[r * w + c] = 1; c += 1; }
+            }
         }
     }
     g
+}
+
+/// Stamp a stroke band of `width` pixels around a polyline into the bitmap (pixel centers at
+/// +0.5). Used by the SVG single-line mode: unfilled shapes are rendered as bands of their
+/// stroke width (SVG default 1 unit), then thinned back to the centerline.
+pub fn stamp_band(g: &mut [u8], w: usize, h: usize, pts: &[[f64; 2]], width: f64) {
+    if pts.len() < 2 { return; }
+    let r = (width / 2.0).max(0.5); let r2 = r * r;
+    let mut dot = |p: [f64; 2]| {
+        let i0 = ((p[0] - r).floor() as isize).max(0); let i1 = ((p[0] + r).ceil() as isize).min(w as isize - 1);
+        let j0 = ((p[1] - r).floor() as isize).max(0); let j1 = ((p[1] + r).ceil() as isize).min(h as isize - 1);
+        if i1 < i0 || j1 < j0 { return; }
+        for j in j0..=j1 { for i in i0..=i1 {
+            let (dx, dy) = (i as f64 + 0.5 - p[0], j as f64 + 0.5 - p[1]);
+            if dx * dx + dy * dy <= r2 { g[j as usize * w + i as usize] = 1; }
+        } }
+    };
+    for win in pts.windows(2) {
+        let (a, b) = (win[0], win[1]);
+        let len = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt();
+        let steps = (len as usize).max(1);
+        for s in 0..=steps { let t = s as f64 / steps as f64; dot([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]); }
+    }
 }
 
 fn thin(g: &mut [u8], w: usize, h: usize) {
@@ -143,7 +171,7 @@ pub fn glyph_strokes(face: &ttf_parser::Face, ch: char) -> Polys {
     let (w, h, base) = ((adv.ceil() + 2.0 * PAD + 20.0) as usize, (R * 1.8).ceil() as usize, (R * 1.25).round());
     let mut ob = Outline::new(PAD, base, R / upm); face.outline_glyph(gid, &mut ob); ob.close();
     if ob.polys.is_empty() { return vec![]; }
-    let mut g = raster(&ob.polys, w, h);
+    let mut g = raster_rule(&ob.polys, w, h, false);
     bitmap_strokes(&mut g, w, h, 1.2, 8).into_iter().filter_map(|pts| {
         let r: Vec<[f64; 2]> = pts.into_iter().map(|q| [(q[0] - PAD) / R, (q[1] - base) / R]).collect();
         if r.len() > 1 { Some(r) } else { None }
@@ -176,6 +204,29 @@ mod tests {
             if (6.0..=8.0).contains(&d) { g[y * w + x] = 1; }
         } }
         g
+    }
+
+    #[test]
+    fn evenodd_rule_leaves_the_hole() {
+        // two concentric squares: nonzero fills the middle too (|wn| counts), evenodd keeps it
+        let (w, h) = (20usize, 20usize);
+        let outer = vec![[1.0, 1.0], [19.0, 1.0], [19.0, 19.0], [1.0, 19.0]];
+        let inner = vec![[5.0, 5.0], [15.0, 5.0], [15.0, 15.0], [5.0, 15.0]];
+        let nz = raster_rule(&vec![outer.clone(), inner.clone()], w, h, false);
+        let eo = raster_rule(&vec![outer, inner], w, h, true);
+        assert_eq!(nz[10 * w + 10], 1, "nonzero: hole filled (any winding counts)");
+        assert_eq!(eo[10 * w + 10], 0, "evenodd: hole stays empty");
+        assert_eq!(eo[2 * w + 2], 1, "evenodd: outer ring inked");
+    }
+
+    #[test]
+    fn stamp_band_covers_the_line() {
+        let (w, h) = (30usize, 30usize);
+        let mut g = vec![0u8; w * h];
+        stamp_band(&mut g, w, h, &[[2.0, 15.0], [28.0, 15.0]], 6.0);
+        assert_eq!(g[15 * w + 15], 1, "middle of the band inked");
+        assert_eq!(g[15 * w + 2], 1, "start cap inked");
+        assert_eq!(g[11 * w + 15], 0, "3 px off the band stays clean");
     }
 
     #[test]

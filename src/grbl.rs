@@ -49,6 +49,11 @@ impl Bus {
 struct Inner {
     port: Option<Box<dyn serialport::SerialPort>>, queue: VecDeque<String>, win: Window, streaming: bool,
     total: usize, sent: usize, st: Status, settings: BTreeMap<String, String>, gen: u64,
+    /// 0.5.33: the pen-up command to run once the board is alive again. A soft reset (Stop,
+    /// 0x18) kills the PWM — the servo falls to rest, i.e. the pen DROPS, and nothing in the
+    /// aborted file would lift it; the UI hands the lift command to the stop/disconnect call
+    /// and it executes as soon as the board greets us (welcome banner) or $X clears an ALARM.
+    pending_penup: Option<String>,
 }
 pub struct Grbl { inner: Mutex<Inner>, pub bus: Bus }
 
@@ -58,7 +63,7 @@ impl Grbl {
     pub fn new() -> (Arc<Self>, Receiver<String>) {
         let (tx, rx) = mpsc::channel();
         let st = Status { connected: false, state: "Disconnected".into(), wpos: [0.0; 3], wco: [0.0; 3], progress: 0.0, ov: 100.0, wcs: "G54".into() };
-        (Arc::new(Grbl { inner: Mutex::new(Inner { port: None, queue: VecDeque::new(), win: Window::default(), streaming: false, total: 0, sent: 0, st, settings: BTreeMap::new(), gen: 0 }), bus: Bus { tx } }), rx)
+        (Arc::new(Grbl { inner: Mutex::new(Inner { port: None, queue: VecDeque::new(), win: Window::default(), streaming: false, total: 0, sent: 0, st, settings: BTreeMap::new(), gen: 0, pending_penup: None }), bus: Bus { tx } }), rx)
     }
     fn log(&self, l: String) { self.bus.send(json!({"type": "log", "line": l}).to_string()); }
     fn emit(&self, i: &Inner) { self.bus.send(json!({"type": "status", "status": i.st}).to_string()); }
@@ -103,8 +108,15 @@ impl Grbl {
         let mut i = self.inner.lock().unwrap();
         if i.gen == g { i.port = None; Self::reset_state(&mut i); i.st.connected = false; i.st.state = "Disconnected".into(); self.emit(&i); }
     }
-    pub fn disconnect(&self) {
-        let mut i = self.inner.lock().unwrap(); i.port = None; i.gen += 1; Self::reset_state(&mut i);
+    pub fn disconnect(&self, penup: &str) {
+        let u = penup.trim();
+        let mut i = self.inner.lock().unwrap();
+        if !u.is_empty() && i.port.is_some() { // 0.5.33: lift while the wire is still open
+            self.log(format!("> {u}"));
+            if let Some(p) = i.port.as_mut() { let _ = p.write_all(format!("{u}\n").as_bytes()); }
+        }
+        i.pending_penup = None;
+        i.port = None; i.gen += 1; Self::reset_state(&mut i);
         i.st.connected = false; i.st.state = "Disconnected".into(); self.emit(&i);
     }
     fn line(&self, l: String) {
@@ -116,7 +128,13 @@ impl Grbl {
         if l.starts_with("Grbl ") || l.starts_with("ALARM:") {
             Self::reset_state(&mut i);
             self.log(format!("-- {l} — queue cleared --"));
-            if l.starts_with("ALARM:") { self.log("-- press $X to unlock --".into()); }
+            if l.starts_with("ALARM:") {
+                self.log("-- press $X to unlock --".into());
+                if i.pending_penup.is_some() { self.log("-- the pen will lift right after $X --".into()); }
+            } else if let Some(u) = i.pending_penup.take() { // 0.5.33: reboot = PWM off, servo at rest — lift again
+                self.log("-- pen lifted after reset --".into());
+                i.queue.push_back(u); i.total += 1; self.pump(&mut i);
+            }
         }
         if l.starts_with('<') {
             let f: Vec<&str> = l.trim_matches(|c| c == '<' || c == '>').split('|').collect();
@@ -163,7 +181,14 @@ impl Grbl {
         }
         if i.streaming && i.queue.is_empty() && i.win.depth() == 0 { i.streaming = false; self.log("-- done --".into()); }
     }
-    pub fn send(&self, line: &str) { let mut i = self.inner.lock().unwrap(); i.queue.push_back(line.to_string()); i.total += 1; self.pump(&mut i); }
+    pub fn send(&self, line: &str) {
+        let mut i = self.inner.lock().unwrap();
+        i.queue.push_back(line.to_string()); i.total += 1;
+        if line.trim() == "$X" { // 0.5.33: unlocking after an ALARM — the deferred pen lift goes right behind it
+            if let Some(u) = i.pending_penup.take() { i.queue.push_back(u); i.total += 1; self.log("-- pen lifted after unlock --".into()); }
+        }
+        self.pump(&mut i);
+    }
     /// System commands ($X unlock, $H homing) must never wait behind a stuck queue:
     /// write them to the wire immediately and account their bytes like any in-flight line.
     pub fn send_now(&self, line: &str) {
@@ -172,10 +197,32 @@ impl Grbl {
         self.log(format!("> {line}"));
         i.win.push(line.len());
         if let Some(p) = i.port.as_mut() { let _ = p.write_all(format!("{line}\n").as_bytes()); }
+        if line.trim() == "$X" { // 0.5.33: the unlock button path — the deferred pen lift goes right behind $X
+            if let Some(u) = i.pending_penup.take() {
+                self.log("-- pen lifted after unlock --".into());
+                if let Some(p) = i.port.as_mut() { let _ = p.write_all(format!("{u}\n").as_bytes()); }
+            }
+        }
     }
     pub fn stream(&self, gcode: &str) {
         let mut i = self.inner.lock().unwrap();
-        let lines: Vec<String> = gcode.lines().map(|l| l.split(';').next().unwrap_or("").trim().to_string()).filter(|l| !l.is_empty()).collect();
+        // 0.5.28: comments are stripped for the board, but a `; [MARKER: …]` note right before
+        // an M0 pause is logged to the console — the operator reads WHICH marker to install
+        // while the machine is held (then presses Resume / «Продолжить»).
+        let mut lines: Vec<String> = Vec::new();
+        let mut note = String::new();
+        for raw in gcode.lines() {
+            let code = raw.split(';').next().unwrap_or("").trim().to_string();
+            if let Some((_, c)) = raw.split_once(';') {
+                if let Some(r) = c.trim().strip_prefix("[MARKER:") { note = r.split(']').next().unwrap_or("").trim().to_string(); }
+            }
+            if code.is_empty() { continue; }
+            if code == "M0" {
+                if note.is_empty() { self.log("-- M0 pause: change the marker, then Resume --".into()); }
+                else { self.log(format!("-- M0 pause: change marker to \"{note}\", then Resume --")); }
+            }
+            lines.push(code);
+        }
         i.total = lines.len(); i.sent = 0; i.streaming = true; i.queue.extend(lines); self.pump(&mut i);
     }
     fn rt(&self, b: &[u8]) { if let Some(p) = self.inner.lock().unwrap().port.as_mut() { let _ = p.write_all(b); } }
@@ -183,7 +230,15 @@ impl Grbl {
     pub fn resume(&self) { self.rt(b"~"); }
     /// Real-time feed override (GRBL 1.1): 0x91 = +10%, 0x92 = -10%, 0x90 = set 100%.
     pub fn feed_ov(&self, b: u8) { self.rt(&[b]); }
-    pub fn reset(&self) { { let mut i = self.inner.lock().unwrap(); Self::reset_state(&mut i); } self.rt(&[0x18]); }
+    /// 0.5.33: `penup` is the pen panel's «перо вверх» command; it runs right after the board
+    /// reboots and greets us (the welcome banner). A soft reset stops the PWM and the servo
+    /// falls to rest — pen down; without the lift the next jog would drag the pen across the
+    /// drawing. Empty string = no lift (the pen command is unknown / Z-lift not wanted).
+    pub fn reset(&self, penup: &str) {
+        { let mut i = self.inner.lock().unwrap(); Self::reset_state(&mut i);
+          i.pending_penup = if penup.trim().is_empty() { None } else { Some(penup.trim().to_string()) }; }
+        self.rt(&[0x18]);
+    }
     pub fn jog_cancel(&self) { self.inner.lock().unwrap().queue.clear(); self.rt(&[0x85]); }
 }
 
@@ -236,5 +291,86 @@ mod tests {
         let mut n = 0;
         while w.can_send(10) { w.push(10); n += 1; }
         assert!(n >= 9, "G1 X0.000 Y0.000-size lines must stack, got {n}");
+    }
+
+    #[test]
+    fn stream_logs_which_marker_to_install_at_m0() {
+        // 0.5.28: while the job is held on an M0, the console must say WHICH marker to install
+        let (g, rx) = Grbl::new();
+        g.stream("G21 G90\n; [MARKER: красный] swap the marker, then press Resume\nM3 S255\nM0\nG1 X1 Y1\nM0\nG1 X2 Y2");
+        let mut got = vec![];
+        while let Ok(l) = rx.try_recv() { got.push(l); }
+        let logs: Vec<String> = got.iter().filter_map(|l| {
+            let v: serde_json::Value = serde_json::from_str(l).ok()?;
+            if v["type"] == "log" { Some(v["line"].as_str()?.to_string()) } else { None }
+        }).collect();
+        assert!(logs.iter().any(|l| l.contains("красный") && l.contains("M0")), "marker note in the log: {logs:?}");
+        // the notes themselves never reach the queue (comments are stripped)
+        let queued = logs.iter().filter(|l| l.starts_with("> ")).count();
+        assert_eq!(queued, 6, "G21/M3/M0/G1/G1/G1 only, comments out: {logs:?}");
+    }
+
+    // -- 0.5.33: a soft reset (Stop, 0x18) stops the PWM, the servo falls to rest (pen DOWN)
+    // and nothing in the aborted file lifts it again. The lift command deferred by reset()
+    // must run exactly once, as soon as the board greets us (welcome banner) — or right
+    // behind $X when the board is in ALARM instead.
+
+    fn logs_of(rx: &Receiver<String>) -> Vec<String> {
+        let mut got = vec![];
+        while let Ok(l) = rx.try_recv() { got.push(l); }
+        got.iter().filter_map(|l| {
+            let v: serde_json::Value = serde_json::from_str(l).ok()?;
+            if v["type"] == "log" { Some(v["line"].as_str()?.to_string()) } else { None }
+        }).collect()
+    }
+
+    #[test]
+    fn stop_lifts_the_pen_when_the_board_reboots() {
+        let (g, rx) = Grbl::new();
+        g.reset("M3 S255");
+        g.line("Grbl 1.1g $J=...".into()); // welcome banner after the soft reset
+        let lg = logs_of(&rx);
+        assert!(lg.iter().any(|l| l == "> M3 S255"), "the lift is queued after the banner: {lg:?}");
+        assert!(lg.iter().any(|l| l.contains("pen lifted after reset")), "console says what happened: {lg:?}");
+        g.line("Grbl 1.1g $J=...".into()); // a manual power cycle must NOT lift again
+        let lg2 = logs_of(&rx);
+        assert!(!lg2.iter().any(|l| l == "> M3 S255"), "one lift per stop: {lg2:?}");
+    }
+
+    #[test]
+    fn stop_without_a_pen_command_lifts_nothing() {
+        let (g, rx) = Grbl::new();
+        g.reset("");
+        g.line("Grbl 1.1g ...".into());
+        let lg = logs_of(&rx);
+        assert!(!lg.iter().any(|l| l.starts_with("> ")), "empty penup: no lift line: {lg:?}");
+    }
+
+    #[test]
+    fn alarm_holds_the_lift_until_unlock() {
+        let (g, rx) = Grbl::new();
+        g.reset("M3 S255");
+        g.line("ALARM: 2".into()); // the banner never comes: reset instead queues the lift behind $X
+        let lg = logs_of(&rx);
+        assert!(!lg.iter().any(|l| l == "> M3 S255"), "no lift while locked: {lg:?}");
+        assert!(lg.iter().any(|l| l.contains("the pen will lift right after $X")), "the console explains the plan: {lg:?}");
+        assert!(g.inner.lock().unwrap().pending_penup.is_some(), "pending survives the ALARM clear");
+        g.send_now("$X"); // the unlock button path — not connected here, pending must survive
+        assert!(g.inner.lock().unwrap().pending_penup.is_some(), "failed send_now keeps the lift pending");
+        g.send("$X"); // the console path: queued $X carries the lift right behind it
+        let lg2 = logs_of(&rx);
+        let (xi, pi) = (lg2.iter().position(|l| l == "> $X").unwrap(), lg2.iter().position(|l| l == "> M3 S255").unwrap());
+        assert!(xi < pi, "the lift follows $X: {lg2:?}");
+        assert!(!g.inner.lock().unwrap().pending_penup.is_some(), "consumed exactly once");
+    }
+
+    #[test]
+    fn disconnect_without_a_port_clears_state_and_pending() {
+        let (g, _rx) = Grbl::new();
+        g.reset("M3 S255");
+        assert!(g.inner.lock().unwrap().pending_penup.is_some());
+        g.disconnect("M3 S255"); // not connected: no wire write, no panic
+        let i = g.inner.lock().unwrap();
+        assert!(!i.st.connected && i.pending_penup.is_none(), "clean state after disconnect");
     }
 }

@@ -12,7 +12,17 @@ use std::sync::Arc;
 fn baud() -> u32 { 115200 }
 #[derive(Deserialize)] struct Line { line: String }
 #[derive(Deserialize)] struct Stream { gcode: String }
+/// 0.5.33: stop/disconnect carry the pen panel's «перо вверх» command — a soft reset or a
+/// closed port leaves the servo at rest (pen down) and the lift must run again right after.
+#[derive(Deserialize, Default)] struct PenupReq { #[serde(default)] penup: String }
 #[derive(Deserialize)] struct Conv { #[serde(default)] svg: String, #[serde(default)] text: String, #[serde(default)] options: Opt }
+/// 0.5.27: SVG + Text as one program. `options` = sheet/pen settings; `text_options` = the
+/// text panel's own fields (font, size, style, alignment, Start X/Y, page).
+#[derive(Deserialize)] struct CombineReq { #[serde(default)] svg: String, #[serde(default)] text: String, #[serde(default)] options: Opt, #[serde(default)] text_options: Opt }
+/// 0.5.28 marker colors: `colors` maps part ids ("svg"/"text"/"infill") to marker names;
+/// `penup` is the pen-up command from the pen panel (servo M3/M5 or `G0 Z…`), `dwell` the
+/// pen pause — the inserted M0 block lifts the pen, waits and holds the job.
+#[derive(Deserialize)] struct MarkersReq { gcode: String, #[serde(default)] colors: std::collections::BTreeMap<String, String>, #[serde(default)] penup: String, #[serde(default)] dwell: f64 }
 #[derive(Deserialize)] struct FontPrev { #[serde(default)] font: String, #[serde(default)] text: String }
 #[derive(Deserialize)] struct PdfReq { data: String, #[serde(default)] options: Value }
 #[derive(Deserialize)] struct DocFile { name: String, data: String }
@@ -90,7 +100,7 @@ pub fn handle(g: &Arc<Grbl>, method: &str, path: &str, body: Value) -> Result<Va
         ("GET", "selftest_info") => Ok(json!({"version": env!("CARGO_PKG_VERSION"), "fonts": text::FONTS.len(), "platform": std::env::consts::OS})),
         ("GET", "version") => Ok(json!({"version": env!("CARGO_PKG_VERSION")})),
         ("POST", "connect") => { let b: Connect = serde_json::from_value(body).map_err(|e| e.to_string())?; g.connect(&b.port, b.baud)?; Ok(json!({"ok": true})) }
-        ("POST", "disconnect") => { g.disconnect(); Ok(json!({"ok": true})) }
+        ("POST", "disconnect") => { let b: PenupReq = serde_json::from_value(body).unwrap_or_default(); g.disconnect(&b.penup); Ok(json!({"ok": true})) }
         ("POST", "send") => { let b: Line = serde_json::from_value(body).map_err(|e| e.to_string())?; g.send(&b.line); Ok(json!({"ok": true})) }
         // Safety actions: accept ANY method. A transport-level slip (GET vs POST) must never
         // silently kill the unlock button again — 0.5.9 shipped exactly that bug.
@@ -100,10 +110,20 @@ pub fn handle(g: &Arc<Grbl>, method: &str, path: &str, body: Value) -> Result<Va
         ("POST", "hold") => { g.hold(); Ok(json!({"ok": true})) }
         ("POST", "resume") => { g.resume(); Ok(json!({"ok": true})) }
         ("POST", "feedov") => { match body["kind"].as_str().unwrap_or("") { "plus" => g.feed_ov(0x91), "minus" => g.feed_ov(0x92), _ => g.feed_ov(0x90) }; Ok(json!({"ok": true})) }
-        ("POST", "stop") => { g.reset(); Ok(json!({"ok": true})) }
-        ("POST", "jogcancel") => { g.jog_cancel(); Ok(json!({"ok": true})) }
+        ("POST", "stop") => { let b: PenupReq = serde_json::from_value(body).unwrap_or_default(); g.reset(&b.penup); Ok(json!({"ok": true})) }
+        // 0.5.34 «Заправить лист» stops its jog through this route; like unlock/home it accepts
+        // ANY method — a transport-level slip must never silently keep the sheet moving.
+        (_, "jogcancel") => { g.jog_cancel(); Ok(json!({"ok": true})) }
         ("POST", "svg") => { let b: Conv = serde_json::from_value(body).map_err(|e| e.to_string())?; svg::svg_to_conv(&b.svg, &b.options).and_then(conv_json) }
         ("POST", "text") => { let b: Conv = serde_json::from_value(body).map_err(|e| e.to_string())?; text::text_to_conv(&b.text, &b.options).and_then(conv_json) }
+        // 0.5.27: both blocks in ONE G-code program — one header, one return home, one print job
+        ("POST", "combine") => { let b: CombineReq = serde_json::from_value(body).map_err(|e| e.to_string())?; crate::gcode::combine_to_conv(&b.svg, &b.text, &b.options, &b.text_options).and_then(conv_json) }
+        // 0.5.28 marker colors: insert/remove the M0 change-marker pauses in an existing program
+        ("POST", "markers") => {
+            let b: MarkersReq = serde_json::from_value(body).map_err(|e| e.to_string())?;
+            let (gcode, pauses) = crate::gcode::apply_marker_colors(&b.gcode, &b.colors, &b.penup, b.dwell);
+            Ok(json!({"gcode": gcode, "pauses": pauses}))
+        }
         // live font preview: glyph contours of a sample text for the dropdown preview line
         ("POST", "fontpreview") => {
             let b: FontPrev = serde_json::from_value(body).map_err(|e| e.to_string())?;
@@ -160,12 +180,33 @@ mod tests {
     }
 
     #[test]
+    fn jogcancel_routes_for_the_sheet_feed() {
+        // 0.5.34: «Заправить лист» stops its jog chain through this route — the realtime
+        // 0x85 must be reachable from the UI by ANY method (same safety rule as unlock/home)
+        let (g, _rx) = Grbl::new();
+        assert!(handle(&g, "POST", "jogcancel", json!({})).is_ok());
+        assert!(handle(&g, "GET", "jogcancel", json!({})).is_ok(), "any method must route");
+    }
+
+    #[test]
     fn svg_dispatch() {
         let (g, _rx) = Grbl::new();
         let svg = "<svg xmlns='http://www.w3.org/2000/svg' width='10mm' viewBox='0 0 10 10'><rect width='5' height='5'/></svg>";
         let v = handle(&g, "POST", "svg", json!({"svg": svg, "options": {}})).unwrap();
         assert!(v["gcode"].as_str().unwrap().contains("G1"));
         assert!(v["warnings"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn svg_single_mode_routes_through_api() {
+        // 0.5.30: svgMode=single — an open stroke collapses to ONE centerline pen-down
+        let (g, _rx) = Grbl::new();
+        let svg = "<svg xmlns='http://www.w3.org/2000/svg' width='40mm' viewBox='0 0 40 20'><path d='M5 5 L35 15' fill='none' stroke='#000' stroke-width='2'/></svg>";
+        let v = handle(&g, "POST", "svg", json!({"svg": svg, "options": {"svgMode": "single"}})).unwrap();
+        let s = v["gcode"].as_str().unwrap();
+        assert!(!s.is_empty());
+        assert!(!s.contains("G2 ") && !s.contains("G3 "), "skeleton output: {s}");
+        assert_eq!(s.matches("M5").count(), 1, "one pen down: {s}");
     }
 
     #[test]
@@ -180,6 +221,22 @@ mod tests {
     fn b64_roundtrip() {
         assert_eq!(b64("SGVsbG8=").unwrap(), b"Hello");
         assert_eq!(b64("").unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn markers_route_patches_the_program() {
+        let (g, _rx) = Grbl::new();
+        let prog = "G21 G90\n; [PART svg]\nG1 X1 Y1\nM3 S255\n; [PART text]\nG1 X5 Y5";
+        let v = handle(&g, "POST", "markers", json!({
+            "gcode": prog, "colors": {"svg": "black", "text": "red"}, "penup": "M3 S255", "dwell": 0.15
+        })).unwrap();
+        assert_eq!(v["pauses"], json!(1));
+        let out = v["gcode"].as_str().unwrap();
+        assert!(out.contains("M0") && out.contains("[MARKER: red]"));
+        // idempotent re-apply keeps one pause; empty palette removes it
+        let v2 = handle(&g, "POST", "markers", json!({ "gcode": out, "colors": {}, "penup": "M3 S255", "dwell": 0.15 })).unwrap();
+        assert_eq!(v2["pauses"], json!(0));
+        assert!(!v2["gcode"].as_str().unwrap().contains("M0"));
     }
 
     #[test]

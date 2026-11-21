@@ -17,12 +17,18 @@ import { useEffect, useRef } from 'react';
 // the pending drag shift through the [conv, yOrigin, sheet, margins] effect below.
 export default function Preview({ conv, pos, onDrop, pick, onPick, yOrigin = 'top', sheet = [210, 297], margins = [0, 0, 0, 0] }) {
   const cv = useRef(); const drag = useRef(null); const sh = useRef([0, 0]); const drawRef = useRef(null);
+  // 0.5.32: the buffer width the canvas was last painted with. The ResizeObserver callback
+  // redraws only when the real width differs from it — without this the redraw inside the
+  // observer (buffer height = paper aspect) re-layouts the card and WebKit logs the benign
+  // «ResizeObserver loop completed with undelivered notifications» on every tab switch.
+  const roW = useRef(0);
   const draw = (s = sh.current) => {
     const c = cv.current; if (!c) return;
     const x = c.getContext('2d'), [pw, ph] = conv ? conv.paper : sheet;
     // 0.5.24: the preview card is a large 2-column grid area — the canvas buffer follows the
     // real card width (crisp at any size) instead of the old fixed 420 px buffer.
     const cw = Math.max(320, Math.round(c.clientWidth || 420)), k = cw / pw;
+    roW.current = cw;
     const fy = yOrigin === 'bottom' ? (b => ph - b) : yOrigin === 'reverse' ? (b => -b) : (b => b);
     c.width = cw; c.height = ph * k; x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
     x.lineWidth = 1;
@@ -48,7 +54,7 @@ export default function Preview({ conv, pos, onDrop, pick, onPick, yOrigin = 'to
   useEffect(() => { if (!drag.current) draw(); }, [pos]); // the live pen dot must not erase a running drag
   useEffect(() => { // 0.5.24: the big preview card resizes with the window — repaint to stay crisp
     if (typeof ResizeObserver !== 'function') return;
-    const ro = new ResizeObserver(() => drawRef.current && drawRef.current());
+    const ro = new ResizeObserver(() => { const w = cv.current ? cv.current.clientWidth : 0; if (w && w !== roW.current && drawRef.current) drawRef.current(); });
     if (cv.current) ro.observe(cv.current);
     return () => ro.disconnect();
   }, []);

@@ -2,7 +2,8 @@
 //! (error-bounded, not the old fixed 16 chords) and then re-fitted into true circular
 //! arcs G2/G3 — the structure program №1 uses, which cuts the line count by an order
 //! of magnitude and lets the GRBL planner chain curves without micro-braking.
-use crate::gcode::{segs_to_conv, Conv, Opt, Seg, SegPath, SegPolys};
+use crate::gcode::{emit_program, paper, position_split, seg_end, segpath_points, segs_to_conv, Conv, Opt, Part, PartId, Polys, Seg, SegPath, SegPolys};
+use crate::skeleton::{bitmap_strokes, raster_rule, stamp_band};
 use svgtypes::{SimplePathSegment as S, SimplifyingPathParser};
 
 /// Max deviation of fitted segments from the true curve, in final sheet millimeters.
@@ -169,9 +170,9 @@ pub fn flatten(d: &str, tol: f64, warn: &mut Vec<String>) -> SegPolys {
     out
 }
 
-pub fn svg_to_conv(svg: &str, o: &Opt) -> Result<Conv, String> {
-    let doc = roxmltree::Document::parse_with_options(svg, roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() }).map_err(|e| format!("Invalid SVG: {e}"))?;
-    let root = doc.root_element();
+/// mm per source unit: the width attribute (mm/cm/in/pt/px) measured against the viewBox,
+/// or the 96-dpi default. Shared by the standard and single-line (0.5.30) converters.
+fn svg_unit(root: &roxmltree::Node) -> f64 {
     let vb: Vec<f64> = root.attribute("viewBox").map(|v| v.split(|c: char| c.is_whitespace() || c == ',').filter_map(|s| s.parse().ok()).collect()).unwrap_or_default();
     let mut unit = 25.4 / 96.0;
     if let Some(w) = root.attribute("width") {
@@ -180,19 +181,167 @@ pub fn svg_to_conv(svg: &str, o: &Opt) -> Result<Conv, String> {
             unit = if vb.len() == 4 && vb[2] != 0.0 { val * um / vb[2] } else { um };
         }
     }
+    unit
+}
+
+/// 0.5.27: parse + flatten only — segments in SOURCE units plus the mm-per-unit factor (the
+/// fitting tolerance follows the scale). Shared by svg_to_conv and the combined SVG+Text program.
+pub fn svg_to_segs(svg: &str, o: &Opt, warn: &mut Vec<String>) -> Result<(SegPolys, f64), String> {
+    let doc = roxmltree::Document::parse_with_options(svg, roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() }).map_err(|e| format!("Invalid SVG: {e}"))?;
+    let root = doc.root_element();
+    let unit = svg_unit(&root);
     // fitting tolerance in source units: FIT_TOL_MM on the sheet (auto-fit can only shrink the
     // scale afterwards, which only makes the deviation smaller than the budget)
     let mm_per_unit = (unit * o.scale / 100.0).abs();
     let tol = if mm_per_unit > 1e-9 { (FIT_TOL_MM / mm_per_unit).max(1e-9) } else { 1.0 };
-    let mut warn = vec![]; let mut segs: SegPolys = vec![];
+    let mut warn_d: Vec<String> = vec![]; let mut segs: SegPolys = vec![];
     for nd in doc.descendants().filter(|n| n.is_element()) {
         if let Some(d) = shape_d(&nd) {
-            if nd.attribute("transform").is_some() { warn.push("transform attribute ignored".into()); }
-            segs.extend(flatten(&d, tol, &mut warn));
+            if nd.attribute("transform").is_some() { warn_d.push("transform attribute ignored".into()); }
+            segs.extend(flatten(&d, tol, warn_d.as_mut()));
         }
     }
-    warn.dedup();
+    warn_d.dedup();
+    warn.extend(warn_d);
+    Ok((segs, unit))
+}
+
+pub fn svg_to_conv(svg: &str, o: &Opt) -> Result<Conv, String> {
+    if o.svg_mode == "single" { return svg_single_conv(svg, o); }
+    let mut warn = vec![];
+    let (segs, unit) = svg_to_segs(svg, o, &mut warn)?;
     Ok(segs_to_conv(segs, unit, o, warn))
+}
+
+/// One shape for the single-line mode: point chains positioned on the sheet (mm), whether the
+/// shape is explicitly filled, its fill rule, the stroke-band width in mm (0 = no band) and
+/// the ink thickness in mm that drives the bitmap resolution.
+struct Sh { cs: Polys, fill: bool, eo: bool, band: f64, thick: f64 }
+
+/// 0.5.30 single-line mode: fills and thick strokes become ONE centerline. Shapes are
+/// rasterized on the sheet (explicitly filled ones by their fill rule, unfilled ones as a
+/// band of their stroke width — SVG default 1 unit), the bitmap is thinned to a skeleton and
+/// traced (skeleton.rs — the same machinery as the text «Ручка» style and PDF pages), and the
+/// strokes go out as line-only G-code. Line art keeps its geometry (the band thins back to
+/// the centerline); filled bold fonts and logos collapse to single pen strokes. Returns
+/// positioned strokes in sheet mm — shared by svg_to_conv and the combined SVG+Text program.
+pub fn svg_single_paths(svg: &str, o: &Opt, pw: f64, ph: f64, warn: &mut Vec<String>) -> Result<SegPolys, String> {
+    let doc = roxmltree::Document::parse_with_options(svg, roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() }).map_err(|e| format!("Invalid SVG: {e}"))?;
+    let root = doc.root_element();
+    let unit = svg_unit(&root);
+    let mpu = (unit * o.scale / 100.0).abs(); // mm per source unit after the scale
+    let tol = if mpu > 1e-9 { (FIT_TOL_MM / mpu).max(1e-9) } else { 1.0 };
+    let mut warn_d: Vec<String> = vec![];
+    let mut src: Vec<(SegPolys, bool, bool, f64)> = vec![]; // subpaths, filled, evenodd, band width (units)
+    for nd in doc.descendants().filter(|n| n.is_element()) {
+        let Some(d) = shape_d(&nd) else { continue };
+        if nd.attribute("transform").is_some() { warn_d.push("transform attribute ignored".into()); }
+        let paths = flatten(&d, tol, warn_d.as_mut());
+        if paths.is_empty() { continue; }
+        // SVG renders shapes black-filled by default, but line art for plotters is authored
+        // with explicit fills — an IMPLICIT fill is treated as a stroke line (a bare rect
+        // stays its outline instead of collapsing into a plus-shaped skeleton).
+        let filled = nd.attribute("fill").map(|f| !f.trim().eq_ignore_ascii_case("none")).unwrap_or(false);
+        let eo = nd.attribute("fill-rule").map(|f| f.trim().eq_ignore_ascii_case("evenodd")).unwrap_or(false);
+        let stroked = nd.attribute("stroke").map(|s| !s.trim().eq_ignore_ascii_case("none")).unwrap_or(false);
+        let sw = nd.attribute("stroke-width").and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(1.0);
+        let band = if stroked { sw } else if !filled { 1.0 } else { 0.0 };
+        src.push((paths, filled, eo, band));
+    }
+    warn_d.dedup();
+    warn.extend(warn_d);
+    if src.is_empty() { return Ok(vec![]); }
+    // one common transform (auto-fit, margins, center, invert-Y, Y-origin), split back per shape
+    let groups: Vec<Polys> = src.iter().map(|(paths, ..)| paths.iter().map(segpath_points).collect()).collect();
+    let pos = position_split(groups, unit, o, pw, ph, warn);
+    let mut shs: Vec<Sh> = vec![];
+    let mut bb = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    for (i, (_, filled, eo, band)) in src.iter().enumerate() {
+        let cs: Polys = pos[i].iter().map(|p| p.iter().map(seg_end).collect()).collect();
+        let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+        for c in &cs { for v in c { b = [b[0].min(v[0]), b[1].min(v[1]), b[2].max(v[0]), b[3].max(v[1])]; } }
+        if b[0] > b[2] { continue; } // nothing positioned (degenerate subpaths)
+        bb = [bb[0].min(b[0]), bb[1].min(b[1]), bb[2].max(b[2]), bb[3].max(b[3])];
+        // ink thickness drives the bitmap resolution: a filled shape is as thick as its
+        // smaller side, a band as its width
+        let thick = if *filled { ((b[2] - b[0]).min(b[3] - b[1])).max(band * mpu) } else { band * mpu };
+        shs.push(Sh { cs, fill: *filled, eo: *eo, band: band * mpu, thick });
+    }
+    if shs.is_empty() { return Ok(vec![]); }
+    // resolution: ~12 px/mm at best, never more than ~300 px across the thickest ink (thinning
+    // costs O(width) passes over the whole bitmap; 300 px stays well under a second) and never
+    // a bitmap wider than ~2400 px
+    let thick = shs.iter().map(|s| s.thick).fold(0.0f64, f64::max).max(0.5);
+    let dim = (bb[2] - bb[0]).max(bb[3] - bb[1]).max(1.0);
+    let mut res = (300.0 / thick).clamp(2.0, 12.0).min(2400.0 / dim).max(1.0);
+    // pad: 1 mm plus half the widest stroke band — the stamped round caps must never touch
+    // the bitmap border (thinning never deletes border pixels, so border-touching caps would
+    // leave arc-shaped skeleton spurs and fork the trace)
+    let pad = 1.0 + shs.iter().filter(|s| s.band > 0.0).map(|s| s.band / 2.0).fold(0.0f64, f64::max);
+    let org = [bb[0] - pad, bb[1] - pad];
+    let mut w = (((bb[2] - bb[0]) + 2.0 * pad) * res).ceil() as usize;
+    let mut h = (((bb[3] - bb[1]) + 2.0 * pad) * res).ceil() as usize;
+    if w * h > 10_000_000 { // hard memory/time cap: shrink the resolution and re-size once
+        res *= (10_000_000.0 / (w as f64 * h as f64)).sqrt();
+        w = (((bb[2] - bb[0]) + 2.0 * pad) * res).ceil() as usize;
+        h = (((bb[3] - bb[1]) + 2.0 * pad) * res).ceil() as usize;
+    }
+    let (w, h) = (w.max(2), h.max(2));
+    let mut g = vec![0u8; w * h];
+    for s in &shs {
+        let px = |v: &[f64; 2]| [(v[0] - org[0]) * res, (v[1] - org[1]) * res];
+        if s.fill {
+            let polys: Vec<Vec<[f64; 2]>> = s.cs.iter().map(|c| c.iter().map(px).collect()).collect();
+            for (i, ink) in raster_rule(&polys, w, h, s.eo).into_iter().enumerate() { if ink == 1 { g[i] = 1; } }
+        }
+        if s.band > 0.0 {
+            let wpx = (s.band * res).max(2.0); // at least ~2 px so thinning keeps the line
+            for c in &s.cs { let cp: Vec<[f64; 2]> = c.iter().map(px).collect(); stamp_band(&mut g, w, h, &cp, wpx); }
+        }
+    }
+    let mut strokes = bitmap_strokes(&mut g, w, h, 1.0, 3);
+    drop_shadow_strokes(&mut strokes, 2.2);
+    let k = 1.0 / res;
+    let mut out: SegPolys = vec![];
+    for s in strokes {
+        let pts: Vec<[f64; 2]> = s.iter().map(|q| [org[0] + q[0] * k, org[1] + q[1] * k]).collect();
+        let len: f64 = pts.windows(2).map(|wn| d2(wn[0], wn[1])).sum();
+        if len >= 0.3 { out.push(pts.into_iter().map(Seg::L).collect()); } // specks below 0.3 mm die
+    }
+    Ok(out)
+}
+
+/// Drop skeleton fragments that hug a longer stroke within `eps` px along their whole length
+/// and are far shorter than it: thinning a rasterized fill occasionally sheds a short
+/// parallel strand next to the main line (a boundary kink bypassed by the trace) — it
+/// duplicates ink the long stroke already covers, so plotting it would just double the pass.
+fn drop_shadow_strokes(strokes: &mut Vec<Vec<[f64; 2]>>, eps: f64) {
+    if strokes.len() < 2 { return; }
+    let lens: Vec<f64> = strokes.iter().map(|s| s.windows(2).map(|w| d2(w[0], w[1])).sum()).collect();
+    let mut ord: Vec<usize> = (0..strokes.len()).collect();
+    ord.sort_by(|&a, &b| lens[b].partial_cmp(&lens[a]).unwrap_or(std::cmp::Ordering::Equal));
+    let mut drop = vec![false; strokes.len()];
+    let mut kept: Vec<usize> = vec![];
+    for &i in &ord {
+        let shadow = kept.iter().any(|&j| {
+            lens[i] < 0.25 * lens[j]
+                && strokes[i].iter().all(|p| strokes[j].windows(2).any(|w| dist_seg(*p, w[0], w[1]) <= eps))
+        });
+        if shadow { drop[i] = true; } else { kept.push(i); }
+    }
+    let mut k = 0;
+    strokes.retain(|_| { k += 1; !drop[k - 1] });
+}
+
+pub fn svg_single_conv(svg: &str, o: &Opt) -> Result<Conv, String> {
+    let mut warn = vec![];
+    let (pw, ph) = paper(o, &mut warn);
+    let paths = svg_single_paths(svg, o, pw, ph, &mut warn)?;
+    if paths.is_empty() {
+        warn.push("No drawable shapes found".into());
+        return Ok(Conv { gcode: String::new(), warnings: warn, paths: vec![], bbox: None, paper: [pw, ph], pages: None, page: None });
+    }
+    Ok(emit_program("SVG", &[Part { id: PartId::Svg, feed: o.feed, paths }], o, pw, ph, warn))
 }
 
 #[cfg(test)]
@@ -344,5 +493,69 @@ mod tests {
         assert!(matches!(segs[0], Seg::L([0.0, 0.0])), "anchor first");
         assert!(matches!(segs[1], Seg::L([3.0, 0.0])));
         assert!(matches!(segs[2], Seg::L([3.0, 3.0])));
+    }
+
+    // 0.5.30: single-line mode — fills and thick strokes become one centerline
+
+    #[test]
+    fn default_mode_is_standard() {
+        assert_eq!(Opt::default().svg_mode, "standard");
+    }
+
+    #[test]
+    fn single_mode_donut_draws_one_centerline() {
+        // filled ring (outer r=20, inner r=10, evenodd): the skeleton must be one closed
+        // stroke near the mid radius 15, far inside the standard outline footprint
+        let svg = "<svg xmlns='http://www.w3.org/2000/svg' width='50mm' viewBox='0 0 50 50'><path fill='#000' fill-rule='evenodd' d='M5 25A20 20 0 1 0 45 25A20 20 0 1 0 5 25ZM15 25A10 10 0 1 1 35 25A10 10 0 1 1 15 25Z'/></svg>";
+        let o = Opt { svg_mode: "single".into(), ..Default::default() };
+        let c = svg_to_conv(svg, &o).unwrap();
+        assert!(!c.gcode.is_empty());
+        assert!(!c.gcode.contains("G2 ") && !c.gcode.contains("G3 "), "skeleton emits lines only: {}", c.gcode);
+        assert_eq!(c.gcode.matches("\nM5\n").count(), 1, "the ring collapses into ONE stroke: {}", c.gcode);
+        // the ring is normalized to the sheet corner: center (20,20), mid radius 15
+        let (mut rmin, mut rmax) = (1e9f64, 0.0f64);
+        for p in &c.paths { for v in p { let r = (v[0] - 20.0).hypot(v[1] - 20.0); rmin = rmin.min(r); rmax = rmax.max(r); } }
+        assert!((rmin - 15.0).abs() < 3.0 && (rmax - 15.0).abs() < 3.0, "skeleton sits on the mid radius 15: [{rmin:.2}, {rmax:.2}]");
+        // the standard mode still draws the full outline (40x40 mm bbox)
+        let s = svg_to_conv(svg, &Opt::default()).unwrap();
+        let bb = s.bbox.unwrap();
+        assert!((bb[2] - bb[0] - 40.0).abs() < 0.1, "standard mode keeps the outline: {bb:?}");
+    }
+
+    #[test]
+    fn single_mode_open_stroke_stays_the_centerline() {
+        // an unfilled line keeps its geometry: one pen-down stroke along the same diagonal
+        // (not a doubled outline), every point on the line y = x/3 (tip erosion is bounded)
+        let svg = "<svg xmlns='http://www.w3.org/2000/svg' width='40mm' viewBox='0 0 40 20'><path d='M5 5 L35 15' fill='none' stroke='#000' stroke-width='2'/></svg>";
+        let o = Opt { svg_mode: "single".into(), ..Default::default() };
+        let c = svg_to_conv(svg, &o).unwrap();
+        assert_eq!(c.gcode.matches("\nM5\n").count(), 1, "one stroke, not a doubled outline: {}", c.gcode);
+        let mut xmax = 0.0f64;
+        for p in &c.paths { for v in p {
+            assert!((v[1] - v[0] / 3.0).abs() <= 0.8, "off the centerline: {v:?}");
+            xmax = xmax.max(v[0]);
+        } }
+        assert!(xmax > 27.0, "the line reaches its far end: xmax={xmax}");
+    }
+
+    #[test]
+    fn single_mode_bare_rect_keeps_its_outline() {
+        // SVG renders shapes black-filled by default, but a BARE rect (no fill attribute) is
+        // line-art intent: it must stay its outline, not collapse into a plus-shaped skeleton
+        let svg = "<svg xmlns='http://www.w3.org/2000/svg' width='50mm' viewBox='0 0 50 50'><rect x='5' y='5' width='40' height='30'/></svg>";
+        let o = Opt { svg_mode: "single".into(), ..Default::default() };
+        let c = svg_to_conv(svg, &o).unwrap();
+        let bb = c.bbox.unwrap();
+        assert!((bb[2] - bb[0] - 40.0).abs() < 0.6 && (bb[3] - bb[1] - 30.0).abs() < 0.6, "outline kept: {bb:?}");
+    }
+
+    #[test]
+    fn single_mode_no_shapes_warns() {
+        let svg = "<svg xmlns='http://www.w3.org/2000/svg' width='40mm' viewBox='0 0 40 20'></svg>";
+        let o = Opt { svg_mode: "single".into(), ..Default::default() };
+        let c = svg_to_conv(svg, &o).unwrap();
+        assert!(c.gcode.is_empty());
+        assert!(c.warnings.iter().any(|w| w.contains("No drawable shapes")));
+        assert_eq!(c.bbox, None);
     }
 }

@@ -2,7 +2,16 @@
 @media(prefers-color-scheme:dark){:root{--bg:#161614;--card:#21211f;--tx:#ececE8;--mu:#9a9a94;--ac:#58a6ff;--bd:#3a3a36;--dn:#ef5350;--res:#f08c3a}}
 *{box-sizing:border-box}body{margin:0;font:14px system-ui,sans-serif;background:var(--bg);color:var(--tx)}
 header{display:flex;gap:12px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--bd);background:var(--card)}
-header h1{font-size:16px;margin:0;flex:1}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;padding:12px}
+header h1{font-size:16px;margin:0;flex:1}main{padding:12px}
+/* 0.5.32: two tabs — «Плоттер» (machine cards + G-code result + sheet preview) and
+   «G-code» (the program sources). Both panes stay mounted; the inactive one is display:none. */
+.tabbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 10px}
+.tabbtn{font-weight:600;padding:7px 18px;border-radius:20px}
+.tabbtn.on{background:var(--ac);color:#fff;border-color:var(--ac)}
+.tabhint{font-size:12px;color:var(--mu);margin-left:auto}
+.tabpane{display:none;gap:12px}
+.tabpane.on{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+#prevslot{display:contents}
 section{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:12px}
 h2{font-size:13px;margin:0 0 8px;color:var(--mu);text-transform:uppercase;letter-spacing:.04em}
 label{display:flex;gap:6px;align-items:center;margin:4px 0}label span{min-width:90px;color:var(--mu)}
@@ -33,6 +42,7 @@ header h1{flex:0 1 auto}header{flex-wrap:wrap}header span{margin-left:auto}
 .axrow b{width:16px;font-size:14px}.axrow code{margin-left:auto;font:13px monospace}.axrow .work{font-size:9px;color:var(--mu);letter-spacing:.08em}
 .zbtn{padding:2px 7px}.wcs{font:12px monospace;background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:3px 8px;color:var(--mu)}
 .hint{font-size:12px;color:var(--mu);margin:2px 0 4px}
+.feedstat{font-weight:600;color:var(--ac);margin:4px 0 0}
 .stylerow{display:flex;gap:6px;margin:4px 0}
 .fprev{border:1px solid var(--bd);border-radius:6px;padding:3px 8px;margin:4px 0;background:#fff;color:#1d1d1b}
 .stybtn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 2px;font-size:11px;line-height:1.15;min-width:0}
@@ -52,22 +62,37 @@ input[type=range]{flex:1;min-width:0;padding:0;height:22px;accent-color:var(--ac
 .connstat.ok{border-color:rgba(46,125,50,.45);background:rgba(46,125,50,.1)}.connstat.ok i,.connstat.ok b{color:#1b8a3a}
 .connstat.err{border-color:rgba(198,40,40,.5);background:rgba(198,40,40,.12)}.connstat.err i,.connstat.err b{color:var(--dn)}
 .connstat.mid{border-color:rgba(178,106,0,.45);background:rgba(178,106,0,.1)}.connstat.mid i,.connstat.mid b{color:#b26a00}
+/* 0.5.28: marker colors inside the G-code card — a row per program part ([PART svg/text/infill])
+   with a marker-name field and preset swatches; Apply inserts the M0 change-marker pauses */
+.mkbox{border-top:1px solid var(--bd);margin-top:10px;padding-top:8px}
+.mktitle{display:block;margin-bottom:2px;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--mu)}
+.mkrow{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:4px 0}
+.mkrow label{display:flex;align-items:center;gap:6px;flex:1;min-width:200px;margin:0}
+.mkrow label span{min-width:120px;color:var(--mu)}
+.chips{display:flex;gap:3px;flex-wrap:wrap}
+.chip{width:17px;height:17px;border-radius:4px;border:1px solid rgba(0,0,0,.4);padding:0;flex:0 0 auto}
+.chip:hover{border-color:var(--ac);transform:scale(1.15)}
+.mkcnt{font-size:12px;color:var(--mu);align-self:center}
 @keyframes csblink{50%{opacity:.2}}
 .connstat.err i{animation:csblink 1s steps(1) infinite}.connstat.mid i{animation:csblink 1.4s steps(1) infinite}
 @media(prefers-color-scheme:dark){.connstat.ok i,.connstat.ok b{color:#66bb6a}.connstat.mid i,.connstat.mid b{color:#ffb74d}}
-/* 0.5.25: the card arrangement follows the approved figcraft mockup 1:1 — column 1 is the
-   machine column (Connection / Manual control / Pen settings / GRBL settings), column 2 is the
-   G-code pair (Ready-made G-code on top, the conversion result right under it), column 3 is
-   Text, column 4 is SVG; the sheet preview takes the big 2×2 area in the middle (columns 2-3,
-   under the G-code/Text row) exactly as tall as the A4 ratio makes it, and the console stays
-   full-width at the bottom. From 1010px the preview still spans 2 columns of the auto-fit flow. */
-@media(min-width:1010px){section.p-prev{grid-column:span 2}}
+/* 0.5.25 card arrangement, reworked for the 0.5.32 tabs: the «Плоттер» pane is a 3-column
+   grid — machine cards (Connection / Manual / Pen / GRBL settings) in column 1, the G-code
+   result on top of the console in column 2, the sheet preview down column 3; the «G-code»
+   pane places the three program sources (Ready-made G-code / Text / SVG) side by side. The
+   preview card flows inside its pane like every other card (display:contents slot). */
+@media(min-width:1010px){.tabpane section.p-prev{grid-column:span 2}}
 @media(min-width:1340px){
   /* minmax(0,1fr): plain 1fr tracks are floored by the cards' min-content, which pushed the
-     last column past the window edge (the SVG card was cut off) — with min 0 the four columns
+     last column past the window edge (the SVG card was cut off) — with min 0 the columns
      stay inside the window and every card's content wraps inside its column instead */
-  main{grid-template-columns:repeat(4,minmax(0,1fr));grid-template-areas:"conn paste text svg" "manual gcode text svg" "pen prev prev ." "set prev prev ." "console console console console"}
+  .tabpane{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .tabpane[data-pane=plotter]{grid-template-areas:"conn gcode prev" "manual gcode prev" "pen console prev" "set console prev"}
+  .tabpane[data-pane=gcode]{grid-template-areas:"paste text svg"}
+  /* 0.5.34 «Лист»: a single card — keep it readable, not stretched over the whole window */
+  .tabpane[data-pane=sheet]{grid-template-areas:"sheet sheet ." ;grid-template-columns:repeat(3,minmax(0,1fr))}
+  section.p-sheet{grid-area:sheet}
   /* section.p-* ties with section.wide (0,1,1) and wins by order: a card that keeps the
-     `wide` class for narrow windows still lands in its grid area on the 4-column layout */
+     `wide` class for narrow windows still lands in its grid area on the wide layout */
   section.p-conn{grid-area:conn}section.p-gcode{grid-area:gcode}section.p-manual{grid-area:manual}section.p-pen{grid-area:pen}section.p-svg{grid-area:svg}section.p-text{grid-area:text}section.p-prev{grid-area:prev}section.p-paste{grid-area:paste}section.p-set{grid-area:set}section.p-console{grid-area:console}
 }

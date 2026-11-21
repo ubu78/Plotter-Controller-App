@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../api';
 // Connection info banner: connected / disconnected / error (Alarm) at a glance.
 // Print session controls (plot / hold / resume / feed override) also live here.
-export default function ConnectionPanel({ t, status, send, gcode, setLog }) {
+export default function ConnectionPanel({ t, status, send, gcode, setLog, penup }) {
   const [ports, setPorts] = useState([]); const [port, setPort] = useState(''); const [baud, setBaud] = useState(115200);
   const refresh = () => api('ports').then(p => { if (Array.isArray(p)) { setPorts(p); setPort(x => x || p[0]?.path || ''); } });
   useEffect(() => { refresh(); }, []);
@@ -22,7 +22,7 @@ export default function ConnectionPanel({ t, status, send, gcode, setLog }) {
     <label><span>{t('port')}</span><select value={port} onChange={e => setPort(e.target.value)}>{ports.map(p => <option key={p.path} value={p.path}>{p.name ? `${p.name} · ${p.path}` : p.path}</option>)}</select><button onClick={refresh}>↻</button></label>
     <label><span>{t('baud')}</span><input type="number" value={baud} onChange={e => setBaud(+e.target.value)} /></label>
     <div className="row"><button className="pri" onClick={() => api('connect', { port, baud })}>{t('connect')}</button>
-      <button onClick={() => api('disconnect', {})}>{t('disconnect')}</button></div>
+      <button onClick={() => api('disconnect', { penup: penup ? penup() : '' })}>{t('disconnect')}</button></div>
     <div className="safety">
       {/* body argument is mandatory: api(p, b) sends POST only when b is present,
           and unlock/home are POST routes — api('unlock', {}) alone goes out as GET and dies. */}
@@ -33,7 +33,7 @@ export default function ConnectionPanel({ t, status, send, gcode, setLog }) {
       <button className="pri" disabled={runOff} title={runTitle} onClick={run}>{t('plot')}</button>
       <button disabled={!status.connected} title="!" onClick={() => api('hold', {})}>❚❚ {t('pause')}</button>
       <button className="res" disabled={!status.connected} title="~" onClick={() => api('resume', {})}>▶ {t('resume')}</button>
-      <button className="stop" disabled={!status.connected} title="0x18 — soft reset, clears the queue" onClick={() => api('stop', {})}>■ {t('stopprint')}</button>
+      <button className="stop" disabled={!status.connected} title="0x18 — soft reset, clears the queue; the pen lifts right after" onClick={() => api('stop', { penup: penup ? penup() : '' })}>■ {t('stopprint')}</button>
     </div>
     <div className="row">
       <button disabled={!status.connected} title="F −10%" onClick={() => api('feedov', { kind: 'minus' })}>F−</button>

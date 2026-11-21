@@ -31,8 +31,10 @@ const INIT_JS: &str = "window.__pushq = window.__pushq || []; window.__push = fu
 // the button silently do nothing while the Rust-side POST selftest stayed green — this UI half
 // exists so that class of bug can never pass again.
 const SELFTEST_INIT_JS: &str = "try { localStorage.removeItem('svgopts'); } catch (e) {} // hermetic: conversion options persisted by previous runs (margins/scale typed for a screenshot) must not shift the expected coordinates
+try { localStorage.removeItem('pen'); } catch (e) {} // hermetic: default pen commands (servo M3 S255) — the feed chain asserts the lift line
+window.__jserr = null; window.onerror = function (m) { if (/ResizeObserver loop/.test(m)) return; window.__jserr = String(m).slice(0, 200); };
 setTimeout(function () {
-  var rep = function (body) { try { window.ipc.postMessage(JSON.stringify({ id: 888888, path: 'selftest_report', method: 'POST', body: body })); } catch (e) {} };
+  var rep = function (body) { try { body.jserr = window.__jserr || null; window.ipc.postMessage(JSON.stringify({ id: 888888, path: 'selftest_report', method: 'POST', body: body })); } catch (e) {} };
   try {
     var s = []; document.querySelectorAll('select').forEach(function (e) { s.push(e.options.length); });
     var b = document.querySelector('.connstat');
@@ -226,6 +228,142 @@ setTimeout(function () {
         }, 150);
       } catch (eM) { body.margins = { exc: String(eM) }; done(); }
     };
+    var sm = function (done) { // 0.5.30 drawing mode: switching the SVG card's mode select to
+    // 'single' must collapse the diagonal stroke into ONE pen-down line (no doubled outline,
+    // no arcs); 'standard' must restore the exact baseline. Reuses the SVG loaded by the iy
+    // chain (M5 5 L35 15) with the margins zeroed by the mg chain.
+      try {
+        var fi8 = document.querySelector('input[accept*=svg]');
+        body.svgmode = { input: !!fi8 };
+        if (!fi8) { body.svgmode.skip = 'no-input'; return done(); }
+        var sec8 = fi8.closest('section');
+        var ms8 = null, cv8 = null;
+        if (sec8) {
+          sec8.querySelectorAll('select').forEach(function (s) { if (ms8) return; var has = false; s.querySelectorAll('option').forEach(function (o) { if (o.value === 'single') has = true; }); if (has) ms8 = s; });
+          sec8.querySelectorAll('button').forEach(function (x) { if (!cv8 && /конверт|convert|konverteeri/i.test(x.textContent)) cv8 = x; });
+        }
+        body.svgmode.select = !!ms8; body.svgmode.conv_btn = !!cv8;
+        if (!ms8 || !cv8) return done();
+        var sd8 = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value');
+        sd8.set.call(ms8, 'single');
+        ms8.dispatchEvent(new Event('change', { bubbles: true }));
+        setTimeout(function () {
+          cv8.click();
+          setTimeout(function () {
+            var g11 = (document.getElementById('gcode') || {}).textContent || '';
+            body.svgmode.single = (g11.match(/M5/g) || []).length === 1 && g11.indexOf('G2 ') < 0 && g11.indexOf('G3 ') < 0 && g11.indexOf('G1 X') >= 0;
+            sd8.set.call(ms8, 'standard');
+            ms8.dispatchEvent(new Event('change', { bubbles: true }));
+            setTimeout(function () {
+              cv8.click();
+              setTimeout(function () {
+                var g12 = (document.getElementById('gcode') || {}).textContent || '';
+                body.svgmode.restored = g12.indexOf('G1 X0.000 Y0.000') >= 0 && g12.indexOf('G1 X30.000 Y10.000') >= 0;
+                done();
+              }, 450);
+            }, 150);
+          }, 1200);
+        }, 150);
+      } catch (eS) { body.svgmode = { exc: String(eS) }; done(); }
+    };
+    var hs = function (done) { // 0.5.31 hatch style: selecting «Штриховка» reveals the pattern
+    // select in the text card; dots must add many pen-downs vs lines, lightning must differ
+    // from both, and restoring lines must return the exact baseline G-code.
+      try {
+        var ta10 = null;
+        document.querySelectorAll('textarea').forEach(function (x) { if (!ta10 && x.id !== 'pasteta' && !x.classList.contains('gcodeedit')) ta10 = x; });
+        body.hatchstyle = { textarea: !!ta10 };
+        if (!ta10) { body.hatchstyle.skip = 'no-textarea'; return done(); }
+        var td10 = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
+        td10.set.call(ta10, 'ШШ');
+        ta10.dispatchEvent(new Event('input', { bubbles: true }));
+        var sec10 = ta10.closest('section');
+        var st10 = null, cv10 = null;
+        sec10.querySelectorAll('.stybtn').forEach(function (x) { if (!st10 && /штриховка|hatching|viirustega/i.test(x.textContent)) st10 = x; });
+        sec10.querySelectorAll('button').forEach(function (x) { if (!cv10 && /g-code/i.test(x.textContent)) cv10 = x; });
+        body.hatchstyle.style_btn = !!st10; body.hatchstyle.conv_btn = !!cv10;
+        if (!st10 || !cv10) return done();
+        st10.click();
+        setTimeout(function () {
+          var ms10 = null;
+          sec10.querySelectorAll('select').forEach(function (s) { var has = false; s.querySelectorAll('option').forEach(function (o) { if (o.value === 'lightning') has = true; }); if (has) ms10 = s; });
+          body.hatchstyle.select = !!ms10;
+          if (!ms10) return done();
+          var sd10 = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value');
+          var gs10 = function () { return (document.getElementById('gcode') || {}).textContent || ''; };
+          sd10.set.call(ms10, 'lines');
+          ms10.dispatchEvent(new Event('change', { bubbles: true }));
+          setTimeout(function () {
+            cv10.click();
+            setTimeout(function () {
+              var g0 = gs10();
+              body.hatchstyle.baseline = g0.length > 100;
+              sd10.set.call(ms10, 'dots');
+              ms10.dispatchEvent(new Event('change', { bubbles: true }));
+              setTimeout(function () {
+                cv10.click();
+                setTimeout(function () {
+                  var g1 = gs10();
+                  body.hatchstyle.dots_changed = g1 !== g0;
+                  body.hatchstyle.dots_liftings = (g1.match(/M3 S255/g) || []).length > (g0.match(/M3 S255/g) || []).length;
+                  sd10.set.call(ms10, 'lightning');
+                  ms10.dispatchEvent(new Event('change', { bubbles: true }));
+                  setTimeout(function () {
+                    cv10.click();
+                    setTimeout(function () {
+                      var g2 = gs10();
+                      body.hatchstyle.lightning_changed = g2 !== g1 && g2 !== g0;
+                      sd10.set.call(ms10, 'lines');
+                      ms10.dispatchEvent(new Event('change', { bubbles: true }));
+                      setTimeout(function () {
+                        cv10.click();
+                        setTimeout(function () {
+                          var g3 = gs10();
+                          body.hatchstyle.restored = g3 === g0;
+                          done();
+                        }, 500);
+                      }, 150);
+                    }, 500);
+                  }, 150);
+                }, 500);
+              }, 150);
+            }, 500);
+          }, 150);
+        }, 150);
+      } catch (eH) { body.hatchstyle = { exc: String(eH) }; done(); }
+    };
+    var tb = function (name, done2) { // 0.5.32 tab switch: click the tab button (data-tab) and
+    // let the pane render; only the drag chain needs the preview canvas really visible
+      try {
+        var b = document.querySelector('.tabbtn[data-tab=' + name + ']');
+        if (!b || b.classList.contains('on')) { done2(); return; }
+        b.click();
+        setTimeout(done2, 300);
+      } catch (eB) { done2(); }
+    };
+    var tabs = function (done) { // 0.5.32 two tabs — «Плоттер» (machine cards + G-code + the
+    // portaled sheet preview) and «G-code» (paste / text / svg). Switching must show and hide
+    // the right cards, and the preview canvas must live in the plotter pane in both states.
+      try {
+        var bp = document.querySelector('.tabbtn[data-tab=plotter]'), bg = document.querySelector('.tabbtn[data-tab=gcode]');
+        var pp = document.querySelector('.tabpane[data-pane=plotter]'), pg = document.querySelector('.tabpane[data-pane=gcode]');
+        body.tabs = { btns: !!bp && !!bg, panes: !!pp && !!pg };
+        if (!bp || !bg || !pp || !pg) return done();
+        var vis = function (el) { return !!(el && (el.offsetWidth || el.offsetHeight)); };
+        body.tabs.plotter_first = vis(pp) && !vis(pg) && vis(pp.querySelector('.p-conn')) && vis(pp.querySelector('.p-gcode')) && vis(pp.querySelector('.p-prev')) && !vis(pg.querySelector('.p-text'));
+        body.tabs.preview_in_plotter = !!pp.querySelector('.p-prev canvas');
+        bg.click();
+        setTimeout(function () {
+          body.tabs.gcode_second = !vis(pp) && vis(pg) && vis(pg.querySelector('.p-text')) && vis(pg.querySelector('.p-paste')) && vis(pg.querySelector('.p-svg')) && !vis(pp.querySelector('.p-conn'));
+          body.tabs.preview_gone_from_gcode = !pg.querySelector('.p-prev');
+          bp.click();
+          setTimeout(function () {
+            body.tabs.back = vis(pp) && !vis(pg) && vis(pp.querySelector('.p-prev'));
+            done();
+          }, 300);
+        }, 300);
+      } catch (eT) { body.tabs = { exc: String(eT) }; done(); }
+    };
     var dg = function (done) { // 0.5.21 drag: a synthetic pointer drag on the sheet preview
     // must shift the drawing live and the reconversion must bake the offset into the G-code
     // (the first G1 X grows by ~40px * mm-per-screen-pixel). Verifies the whole loop the user
@@ -340,6 +478,123 @@ setTimeout(function () {
         }, 200);
       } catch (e7) { body.sysfont = { exc: String(e7) }; done(); }
     };
+    var cbch = function (done) { // 0.5.27: the TEXT card's 'SVG + Text' button — both blocks
+    // in ONE program. Types text (the font select already holds a system family from the sf
+    // chain — no network), clicks the button, expects the merged header in the G-code panel,
+    // one setup block, one return home and pen-downs for BOTH parts.
+      try {
+        body.combo = {};
+        var tsec = null;
+        document.querySelectorAll('section').forEach(function (s) {
+          if (s.querySelector('textarea[placeholder*=\"Привет\"], textarea[placeholder*=\"Tere\"]')) tsec = s;
+        });
+        var btn = null;
+        if (tsec) tsec.querySelectorAll('button').forEach(function (x) { if (!btn && /SVG \\+ (Текст|Text|Tekst)/.test(x.textContent)) btn = x; });
+        body.combo.button = !!btn;
+        if (!tsec || !btn) return done();
+        var ta2 = tsec.querySelector('textarea[placeholder*=\"Привет\"], textarea[placeholder*=\"Tere\"]');
+        var td2 = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
+        td2.set.call(ta2, 'Объединённая печать');
+        ta2.dispatchEvent(new Event('input', { bubbles: true }));
+        setTimeout(function () {
+          btn.click();
+          setTimeout(function () {
+            var g3 = (document.getElementById('gcode') || {}).textContent || '';
+            body.combo.header = g3.indexOf('SVG + Text') >= 0;
+            body.combo.one_setup = (g3.match(/G21 G90/g) || []).length === 1;
+            body.combo.one_home = (g3.match(/G1 X0 Y0/g) || []).length === 1;
+            body.combo.pen_downs = (g3.match(/M5/g) || []).length;
+            body.combo.both_parts = (g3.match(/M5/g) || []).length >= 8; // svg rect + ~15 text strokes
+            done();
+          }, 1200);
+        }, 200);
+      } catch (e8) { body.combo = { exc: String(e8) }; done(); }
+    };
+    var mkch = function (done) { // 0.5.28 marker colors: the combined program has [PART svg]
+    // and [PART text] — the markers box shows two rows. Type marker names, Apply colors,
+    // expect an M0 pause with the [MARKER: red] comment; Remove pauses must clean it out.
+      try {
+        var mk = null;
+        document.querySelectorAll('.mkbox').forEach(function (b) { if (!mk) mk = b; });
+        body.markers = { box: !!mk };
+        if (!mk) return done();
+        var rows = mk.querySelectorAll('.mkrow input');
+        body.markers.rows = rows.length;
+        var ab = null, rb = null;
+        mk.querySelectorAll('button').forEach(function (x) {
+          if (!ab && /(Применить цвета|Apply colors|Rakenda värvid)/.test(x.textContent)) ab = x;
+          if (!rb && /(Убрать паузы|Remove pauses|Eemalda pausid)/.test(x.textContent)) rb = x;
+        });
+        body.markers.apply_btn = !!ab; body.markers.clear_btn = !!rb;
+        if (rows.length < 2 || !ab || !rb) return done();
+        var d = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+        d.set.call(rows[0], 'black'); rows[0].dispatchEvent(new Event('input', { bubbles: true }));
+        d.set.call(rows[1], 'red'); rows[1].dispatchEvent(new Event('input', { bubbles: true }));
+        setTimeout(function () {
+          ab.click();
+          setTimeout(function () {
+            var g4 = (document.getElementById('gcode') || {}).textContent || '';
+            body.markers.m0 = (g4.match(/M0/g) || []).length;
+            body.markers.note = g4.indexOf('[MARKER: red]') >= 0;
+            body.markers.part_text = g4.indexOf('; [PART text]') >= 0;
+            setTimeout(function () {
+              rb.click();
+              setTimeout(function () {
+                var g5 = (document.getElementById('gcode') || {}).textContent || '';
+                body.markers.removed = (g5.match(/M0/g) || []).length === 0 && g5.indexOf('; [PART text]') >= 0;
+                done();
+              }, 500);
+            }, 600);
+          }, 600);
+        }, 250);
+      } catch (e9) { body.markers = { exc: String(e9) }; done(); }
+    };
+    var fs = function (done) { // 0.5.34 sheet feed: the «Лист» tab holds «Заправить лист» —
+    // start lifts the pen and rolls Y to zero with chained $J jogs (the mock board reports
+    // Jog and moves Y), Stop cancels the jog in real time (0x85) and the panel auto-zeroes
+    // X/Y (G10 L20 P<wcs>) — the manual card's Y coordinate must read 0.00 afterwards.
+      try {
+        var bs = document.querySelector('.tabbtn[data-tab=sheet]');
+        var ps = document.querySelector('.tabpane[data-pane=sheet]');
+        body.feed = { tab_btn: !!bs, pane: !!ps };
+        if (!bs || !ps) return done();
+        bs.click();
+        setTimeout(function () {
+          var sec = ps.querySelector('section.p-sheet');
+          var st = null, sp = null;
+          if (sec) sec.querySelectorAll('button').forEach(function (x) {
+            if (!st && /заправить|feed the sheet|sisesta leht/i.test(x.textContent)) st = x;
+            if (!sp && /^(стоп|stop|peata)$/i.test(x.textContent.trim())) sp = x;
+          });
+          body.feed.start_btn = !!st; body.feed.stop_btn = !!sp;
+          if (!st || !sp) return done();
+          var cnt = function (t, sub) { var n = 0, i = 0; while ((i = t.indexOf(sub, i)) >= 0) { n++; i += sub.length; } return n; };
+          var lg = document.getElementById('log');
+          var j0 = lg ? cnt(lg.textContent, '> $J=G91 G21 Y-') : 0;
+          st.click();
+          setTimeout(function () {
+            var lg2 = document.getElementById('log');
+            var t2 = lg2 ? lg2.textContent : '';
+            body.feed.jog_sent = cnt(t2, '> $J=G91 G21 Y-') > j0;
+            body.feed.penup_sent = cnt(t2, '> M3 S255') > 0;
+            body.feed.running = sec.getAttribute('data-phase') === 'run';
+            sp.click();
+            setTimeout(function () {
+              var t3 = (document.getElementById('log') || {}).textContent || '';
+              body.feed.zero_sent = /G10 L20 P\\d X0 Y0/.test(t3);
+              body.feed.idle_after = sec.getAttribute('data-phase') === 'idle';
+              var yzero = null;
+              document.querySelectorAll('.axrow').forEach(function (r) {
+                var b = r.querySelector('b');
+                if (b && b.textContent === 'Y') { var c = r.querySelector('code'); yzero = c ? c.textContent : null; }
+              });
+              body.feed.y_zeroed = yzero === '0.00';
+              tb('plotter', done);
+            }, 2500);
+          }, 1800);
+        }, 300);
+      } catch (eF) { body.feed = { exc: String(eF) }; done(); }
+    };
     try {
       var gc = {};
       gc.load_input = !!document.querySelector('input[accept*=gcode]');
@@ -354,7 +609,7 @@ setTimeout(function () {
         setTimeout(function () {
           var ta = sec.querySelector('textarea.gcodeedit');
           gc.textarea = !!ta;
-          if (!ta) return px(function () { iy(function () { yo(function () { mg(function () { dg(function () { sf(function () { ux(function () { rep(body); }); }); }); }); }); }); });
+          if (!ta) return px(function () { iy(function () { yo(function () { mg(function () { sm(function () { tb('plotter', function () { dg(function () { sf(function () { cbch(function () { mkch(function () { ux(function () { hs(function () { fs(function () { tabs(function () { rep(body); }); }); }); }); }); }); }); }); }); }); }); }); }); });
           var d = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
           d.set.call(ta, 'G21\\nG90\\nG0 X10 Y10\\nG1 X50 Y30 F3000\\nG1 X10 Y10\\nM5');
           ta.dispatchEvent(new Event('input', { bubbles: true }));
@@ -364,14 +619,14 @@ setTimeout(function () {
             setTimeout(function () {
               var p2 = document.getElementById('gcode');
               gc.pre_after = p2 ? p2.textContent.indexOf('G0 X10') >= 0 : false;
-              px(function () { iy(function () { yo(function () { mg(function () { dg(function () { sf(function () { ux(function () { rep(body); }); }); }); }); }); }); });
+              px(function () { iy(function () { yo(function () { mg(function () { sm(function () { tb('plotter', function () { dg(function () { sf(function () { cbch(function () { mkch(function () { ux(function () { hs(function () { fs(function () { tabs(function () { rep(body); }); }); }); }); }); }); }); }); }); }); }); }); }); });
             }, 150);
           }, 150);
         }, 150);
         return;
       }
     } catch (e2) { body.gcheck = { exc: String(e2) }; }
-    px(function () { iy(function () { yo(function () { mg(function () { dg(function () { sf(function () { ux(function () { rep(body); }); }); }); }); }); }); });
+    px(function () { iy(function () { yo(function () { mg(function () { sm(function () { tb('plotter', function () { dg(function () { sf(function () { cbch(function () { mkch(function () { ux(function () { hs(function () { fs(function () { tabs(function () { rep(body); }); }); }); }); }); }); }); }); }); }); }); }); }); });
   } catch (e) { rep({ exc: String(e) }); }
 }, 6000);";
 
@@ -409,11 +664,80 @@ fn main() {
         .with_url(INDEX)
         .with_initialization_script(INIT_JS);
     if selftest_mode { builder = builder.with_initialization_script(SELFTEST_INIT_JS); }
+    // screenshot/demo aid for the 0.5.32 tabs: open the window on the requested tab
+    // (PLOTTER_DEMO_TAB=gcode for the sources tab; default stays «Плоттер»; not used normally)
+    if let Ok(t) = std::env::var("PLOTTER_DEMO_TAB") {
+        builder = builder.with_initialization_script(format!("try{{localStorage.plottab='{}';}}catch(e){{}}", t.replace('\'', "")));
+    }
+    // screenshot/demo aid: auto-connect to the given port right after the page loads, so a
+    // demo window shows the connected state without clicking (PLOTTER_DEMO_CONNECT=/dev/pts/N;
+    // talks straight to the api dispatcher through window.ipc; not used normally)
+    if let Ok(p) = std::env::var("PLOTTER_DEMO_CONNECT") {
+        let p = p.replace('\'', "");
+        builder = builder.with_initialization_script(format!(r#"
+try {{
+  localStorage.lang = 'ru';
+  setTimeout(function () {{
+    try {{ window.ipc.postMessage(JSON.stringify({{ id: 999999, path: 'connect', method: 'POST', body: {{ port: '{p}', baud: 115200 }} }})); }} catch (e) {{}}
+  }}, 3000);
+}} catch (e) {{}}
+"#));
+    }
     // screenshot/demo aid: pre-seed the sheet margins so the preview shows the dashed
     // printable-area rectangle (PLOTTER_DEMO_MARGINS=1 shot_0522b.sh; not used normally)
     if std::env::var("PLOTTER_DEMO_MARGINS").as_deref() == Ok("1") {
         builder = builder.with_initialization_script(
             "try{var s=JSON.parse(localStorage.svgopts||'{}');s.marginL=15;s.marginT=10;localStorage.svgopts=JSON.stringify(s);}catch(e){}");
+    }
+    // screenshot/demo aid for the 0.5.28 markers block: load the demo SVG+text program,
+    // fill both marker rows (чёрный/красный) and click «Применить цвета» — the window then
+    // holds the combined program WITH the M0 pauses in the G-code panel (PLOTTER_DEMO_MARKERS=1)
+    if std::env::var("PLOTTER_DEMO_MARKERS").as_deref() == Ok("1") {
+        builder = builder.with_initialization_script(r#"
+try { localStorage.lang = 'ru'; } catch (e) {}
+setTimeout(function () {
+  try {
+    var tsec = null;
+    document.querySelectorAll('section').forEach(function (s) {
+      if (s.querySelector('textarea[placeholder*="Привет"], textarea[placeholder*="Tere"]')) tsec = s;
+    });
+    if (!tsec) return;
+    var ta = tsec.querySelector('textarea[placeholder*="Привет"], textarea[placeholder*="Tere"]');
+    var td = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
+    td.set.call(ta, 'Смена маркера: пауза M0');
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    var btn = null;
+    tsec.querySelectorAll('button').forEach(function (x) { if (!btn && /SVG \+ (Текст|Text|Tekst)/.test(x.textContent)) btn = x; });
+    if (!btn) return;
+    // inject a small SVG through the real file input (DataTransfer) so the combined
+    // program gets TWO parts: [PART svg] drawing + [PART text] letters
+    var fi = document.querySelector('input[accept*=svg]');
+    if (!fi || typeof DataTransfer !== 'function') return;
+    var dt = new DataTransfer();
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="40mm" viewBox="0 0 40 40">' +
+      '<rect x="2" y="2" width="36" height="36" fill="none"/><circle cx="20" cy="20" r="12" fill="none"/></svg>';
+    dt.items.add(new File([svg], 'demo.svg', { type: 'image/svg+xml' }));
+    fi.files = dt.files;
+    fi.dispatchEvent(new Event('change', { bubbles: true }));
+    setTimeout(function () {
+      btn.click();
+      setTimeout(function () {
+        var mk = document.querySelector('.mkbox');
+        if (!mk) return;
+        var rows = mk.querySelectorAll('.mkrow input');
+        var d2 = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+        if (rows[0]) { d2.set.call(rows[0], 'чёрный'); rows[0].dispatchEvent(new Event('input', { bubbles: true })); }
+        if (rows[1]) { d2.set.call(rows[1], 'красный'); rows[1].dispatchEvent(new Event('input', { bubbles: true })); }
+        setTimeout(function () {
+          var ab = null;
+          mk.querySelectorAll('button').forEach(function (x) { if (!ab && /(Применить цвета|Apply colors|Rakenda värvid)/.test(x.textContent)) ab = x; });
+          if (ab) ab.click();
+        }, 300);
+      }, 1500);
+    }, 200);
+  } catch (e) {}
+}, 2500);
+"#);
     }
     let webview = builder
         .with_custom_protocol("plotter".into(), move |_, req| {
@@ -440,7 +764,7 @@ fn main() {
                 let path = v["path"].as_str().unwrap_or("").to_string();
                 let method = v["method"].as_str().unwrap_or("GET").to_string();
                 if path == "quit" { // special request: disconnect the port and exit
-                    g.disconnect();
+                    g.disconnect("");
                     std::thread::sleep(Duration::from_millis(150));
                     std::process::exit(0);
                 }
@@ -454,6 +778,7 @@ fn main() {
                     Ok(d) => json!({"t": "rpc", "id": id, "data": d}),
                     Err(e) => json!({"t": "rpc", "id": id, "error": e}),
                 };
+                if std::env::var("PLOTTER_IPC_DEBUG").as_deref() == Ok("1") { eprintln!("IPC-SEND id={id} path={path}"); }
                 let _ = proxy.send_event(resp.to_string());
             });
         })
@@ -479,7 +804,11 @@ fn main() {
                     if rep_ui.is_none() { rep_ui = Some(json!({"pushed": -1})); }
                     if rep_rust.is_none() { rep_rust = Some("{}".into()); }
                 } else {
-                    let _ = webview.evaluate_script(&format!("window.__push({s});"));
+                    if std::env::var("PLOTTER_IPC_DEBUG").as_deref() == Ok("1") {
+                        if let Err(e) = webview.evaluate_script(&format!("window.__push({s});")) { eprintln!("EVAL-ERR: {e}"); }
+                    } else {
+                        let _ = webview.evaluate_script(&format!("window.__push({s});"));
+                    }
                 }
                 // print the report as soon as both halves have arrived
                 if let (Some(rr), Some(ui)) = (&rep_rust, &rep_ui) {
@@ -493,14 +822,21 @@ fn main() {
                         if let Some(d) = ui.get("invy") { v["ui_invy"] = d.clone(); }
                         if let Some(d) = ui.get("sysfont") { v["ui_sysfont"] = d.clone(); }
                         if let Some(d) = ui.get("yorigin") { v["ui_yorigin"] = d.clone(); }
+                        if let Some(d) = ui.get("combo") { v["ui_combo"] = d.clone(); }
+                        if let Some(d) = ui.get("markers") { v["ui_markers"] = d.clone(); }
+                        if let Some(d) = ui.get("svgmode") { v["ui_svgmode"] = d.clone(); }
+                        if let Some(d) = ui.get("hatchstyle") { v["ui_hatchstyle"] = d.clone(); }
+                        if let Some(d) = ui.get("tabs") { v["ui_tabs"] = d.clone(); }
+                        if let Some(e) = ui.get("jserr") { v["jserr"] = e.clone(); }
                         if let Some(d) = ui.get("margins") { v["ui_margins"] = d.clone(); }
                         if let Some(d) = ui.get("drag") { v["ui_drag"] = d.clone(); }
+                        if let Some(d) = ui.get("feed") { v["ui_feed"] = d.clone(); }
                         if let Some(d) = ui.get("unlock_btn") { v["ui_unlock_btn"] = d.clone(); }
                         if let Some(d) = ui.get("stop_btn") { v["ui_stop_btn"] = d.clone(); }
                         if let Some(d) = ui.get("dbg") { v["ipc_dbg"] = d.clone(); }
                         if let Some(e) = ui.get("exc") { v["ui_exc"] = e.clone(); }
                         println!("SELFTEST {v}");
-                        g.disconnect();
+                        g.disconnect("");
                         // PLOTTER_SELFTEST_HOLD=<secs>: keep the window on screen for screenshots
                         if let Ok(h) = std::env::var("PLOTTER_SELFTEST_HOLD") {
                             if let Ok(n) = h.parse::<u64>() { std::thread::sleep(Duration::from_secs(n)); }
@@ -511,7 +847,7 @@ fn main() {
                 }
             }
             Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
-                g.disconnect();
+                g.disconnect("");
                 *cf = ControlFlow::Exit;
             }
             _ => {}
@@ -534,6 +870,21 @@ fn selftest(g: Arc<Grbl>, proxy: EventLoopProxy<String>) {
 
     let text_r = call(&g, "POST", "text", json!({"text": "Привет, selftest", "options": {"size": 6}}));
     r.insert("text".into(), json!(text_r.as_ref().map(|v| !v["gcode"].as_str().unwrap_or("").is_empty()).unwrap_or(false)));
+
+    // 0.5.27: combine — SVG + text as ONE program through the real API route: one header,
+    // one setup, one return home, both parts drawn (preview paths from both sources)
+    let combo_r = call(&g, "POST", "combine", json!({
+        "svg": "<svg xmlns='http://www.w3.org/2000/svg' width='10mm' viewBox='0 0 10 10'><rect width='10' height='10' fill='none'/></svg>",
+        "text": "Объединённая печать",
+        "options": {},
+        "text_options": {"font": "DejaVu Sans", "size": 6, "startX": 50.0, "startY": 40.0}
+    }));
+    r.insert("combine".into(), json!(combo_r.as_ref().map(|v| {
+        let s = v["gcode"].as_str().unwrap_or("");
+        s.contains("— SVG + Text") && s.matches("G21 G90").count() == 1
+            && s.matches("\nG1 X0 Y0").count() == 1 && s.trim_end().ends_with("G1 X0 Y0")
+            && v["paths"].as_array().map_or(false, |a| a.len() >= 5)
+    }).unwrap_or(false)));
 
     // 0.5.16: system font scan — the list must be non-empty and a listed font must convert
     let sysfonts = call(&g, "GET", "fonts", json!({})).ok().and_then(|v| {
@@ -560,6 +911,26 @@ fn selftest(g: Arc<Grbl>, proxy: EventLoopProxy<String>) {
     })().unwrap_or((false, false));
     r.insert("fstyle".into(), json!(fstyle));
     r.insert("fontpreview".into(), json!(fontprev));
+
+    // 0.5.31: hatch pattern variants — all four must convert and differ, dots must lay many
+    // more pen-downs than the line hatch, and a payload without hatchStyle (old UI files)
+    // must behave exactly as "lines"
+    let (hstyles, hdefault) = (|| -> Option<(bool, bool)> {
+        let opts = |hs: serde_json::Value| json!({"text": "ШШ", "options": {"font": "DejaVu Sans", "size": 10, "fillMode": "hatch", "hatchStyle": hs}});
+        let gc = |v: &serde_json::Value| v["gcode"].as_str().unwrap_or("").to_string();
+        let g1 = gc(&call(&g, "POST", "text", opts(json!("lines"))).ok()?);
+        let g2 = gc(&call(&g, "POST", "text", opts(json!("dots"))).ok()?);
+        let g3 = gc(&call(&g, "POST", "text", opts(json!("triangle"))).ok()?);
+        let g4 = gc(&call(&g, "POST", "text", opts(json!("lightning"))).ok()?);
+        let four = !g1.is_empty() && g1 != g2 && g1 != g3 && g1 != g4 && g3 != g4;
+        let lift = |s: &str| s.matches("M3 S255").count();
+        let dots_more = lift(&g2) > lift(&g1);
+        let g5 = gc(&call(&g, "POST", "text", json!({"text": "ШШ", "options": {"font": "DejaVu Sans", "size": 10, "fillMode": "hatch"}})).ok()?);
+        let legacy = g5 == g1; // missing hatchStyle == lines (old payloads unchanged)
+        Some((four && dots_more, legacy))
+    })().unwrap_or((false, false));
+    r.insert("hatchstyle".into(), json!(hstyles));
+    r.insert("hatchdefault".into(), json!(hdefault));
 
     // 0.5.15: invert-Y mirror — the same diagonal with invertY must travel to the mirrored
     // corner and draw to the flipped end, with the footprint unchanged
@@ -699,7 +1070,9 @@ fn selftest(g: Arc<Grbl>, proxy: EventLoopProxy<String>) {
     r.insert("wcs".into(), json!(wcs));
 
     let _ = proxy.send_event(format!("SELFTEST {}", Value::Object(r)));
-    // watchdog: if the page never reports, finish anyway
-    std::thread::sleep(Duration::from_secs(15));
+    // watchdog: if the page never reports, finish anyway. The UI chains (converters with
+    // WebKit fonts + the 0.5.28 markers round-trip) can take well over 15 s in a slow VM —
+    // 60 s keeps the fallback without cutting the real report off.
+    std::thread::sleep(Duration::from_secs(60));
     let _ = proxy.send_event("SELFTEST_TIMEOUT".into());
 }
